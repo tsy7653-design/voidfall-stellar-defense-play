@@ -12,6 +12,11 @@
   <meta name="apple-mobile-web-app-title" content="虚空防线">
   <title>星辰寂灭：虚空防线</title>
   <style>
+    :root {
+      --mobile-safari-top-reserve: 0px;
+      --mobile-safari-bottom-reserve: 0px;
+    }
+
     html,
     body {
       width: 100%;
@@ -30,8 +35,11 @@
 
     #game-container {
       position: fixed;
-      inset: env(safe-area-inset-top) env(safe-area-inset-right)
-        env(safe-area-inset-bottom) env(safe-area-inset-left);
+      inset:
+        calc(env(safe-area-inset-top) + var(--mobile-safari-top-reserve))
+        env(safe-area-inset-right)
+        calc(env(safe-area-inset-bottom) + var(--mobile-safari-bottom-reserve))
+        env(safe-area-inset-left);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -72,6 +80,14 @@
         display: flex;
       }
     }
+
+    /* Safari 普通页面模式的地址栏不计入硬件安全区，额外预留画布顶部空间。 */
+    @media (hover: none) and (pointer: coarse) and (orientation: landscape) {
+      :root {
+        --mobile-safari-top-reserve: clamp(44px, 11svh, 64px);
+        --mobile-safari-bottom-reserve: 6px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -93,6 +109,6 @@
     }, { passive: false });
   </script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.80.1/phaser.min.js"></script>
-  <script src="./main.js?v=0.8.1"></script>
+  <script src="./main.js?v=0.8.2"></script>
 </body>
 </html>
