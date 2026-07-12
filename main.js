@@ -1073,9 +1073,9 @@ class SceneDemo extends Phaser.Scene {
         );
 
         this.tweens.add({
-          targets: building.core ? [building.glow, building.core] : [building.glow, building.body],
-          scale: 1.45,
-          alpha: 0.55,
+          targets: building.core ? [building.glow, building.core] : building.buildingGlow,
+          scale: 1.18,
+          alpha: 0.22,
           duration: 130,
           yoyo: true
         });
@@ -1876,7 +1876,7 @@ class SceneDemo extends Phaser.Scene {
 
     const durability = this.durabilityConfig.building[card.id];
     const healthBar = this.durabilityConfig.healthBar;
-    const glow = this.addToFrontline(this.add.circle(cell.x, cell.y, 28, color, 0.12));
+    const buildingGlow = this.addToFrontline(this.add.circle(cell.x, cell.y, 28, color, 0.12));
 
     const visualConfig = BUILDING_VISUALS[card.id];
     const usesTexture = visualConfig && this.hasTexture(visualConfig.texture);
@@ -1936,7 +1936,8 @@ class SceneDemo extends Phaser.Scene {
       region: cell.type,
       cell,
       body,
-      glow,
+      glow: buildingGlow,
+      buildingGlow,
       core,
       visual: body,
       usesTexture,
@@ -1975,10 +1976,10 @@ class SceneDemo extends Phaser.Scene {
     this.buildings.push(building);
 
     this.tweens.add({
-      targets: core ? [glow, core] : [glow, body],
-      scale: 1.18,
-      alpha: 0.28,
-      duration: 900,
+      targets: core ? [buildingGlow, core] : buildingGlow,
+      scale: 1.08,
+      alpha: 0.20,
+      duration: 1200,
       yoyo: true,
       repeat: -1
     });
@@ -2060,7 +2061,7 @@ class SceneDemo extends Phaser.Scene {
     shieldText.setOrigin(0.5, 0);
 
     this.tweens.add({
-      targets: [slot.line, shieldCore],
+      targets: shieldUsesTexture ? slot.line : [slot.line, shieldCore],
       alpha: 0.35,
       duration: 650,
       yoyo: true,
@@ -2871,7 +2872,7 @@ class SceneDemo extends Phaser.Scene {
     });
 
     this.tweens.add({
-      targets: building.core || building.body,
+      targets: building.core || building.buildingGlow,
       scale: 1.55,
       duration: 80,
       yoyo: true
@@ -2898,7 +2899,7 @@ class SceneDemo extends Phaser.Scene {
     });
 
     this.tweens.add({
-      targets: building.core || building.body,
+      targets: building.core || building.buildingGlow,
       scale: 1.55,
       duration: 80,
       yoyo: true
