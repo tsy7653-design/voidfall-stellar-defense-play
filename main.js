@@ -5,6 +5,43 @@ const ENERGY_CAP_UPGRADE_COST = 10;
 const ENERGY_CAP_UPGRADE_AMOUNT = 10;
 const ENERGY_CAP_MAX = 100;
 const CARD_DRAG_THRESHOLD = 10;
+const GAME_VERSION = "v0.9.5";
+
+// 固定 UI 只提升视觉清晰度，不改变卡牌与按钮的交互尺寸。
+const UI_VISUAL_SCALE = {
+  cardThumbnail: 0.102,
+  meteorThumbnail: 0.108,
+  hudIcon: 0.112,
+  energyUpgradeIcon: 0.072,
+  demolishIcon: 0.104
+};
+
+// UI 视觉规范：只统一布局、层级和颜色，不参与任何战斗或数值计算。
+const UI_THEME = {
+  hud: {
+    panelFill: 0x061323,
+    panelAlpha: 0.68,
+    border: 0x1d9bf0,
+    label: "#9fb8d1",
+    value: "#f2f8ff"
+  },
+  card: {
+    fill: 0x071525,
+    unavailableFill: 0x0d1625,
+    border: 0x34506f,
+    hoverBorder: 0x7dd3fc,
+    selectedBorder: 0x5ee7ff,
+    selectedFill: 0x102943
+  },
+  panel: {
+    overlayAlpha: 0.76,
+    fill: 0x071426,
+    border: 0x38bdf8,
+    divider: 0x2563eb,
+    buttonFill: 0x0b4168,
+    buttonBorder: 0x67d7ff
+  }
+};
 
 const BUILDING_VISUALS = {
   collector: { texture: "building_harvester", scale: 0.12 },
@@ -18,11 +55,20 @@ const ENEMY_VISUALS = {
   fast: { texture: "enemy_fast", scale: 0.07 },
   tank: { texture: "enemy_tank", scale: 0.085 },
   shieldbreaker: { texture: "enemy_shieldbreaker", scale: 0.08 },
-  leaper: { texture: "enemy_leaper", scale: 0.075 },
+  breaker: { texture: "enemy_shieldbreaker", scale: 0.08 },
+  leaper: { texture: "enemy_leaper", scale: 0.214 },
   ranged: { texture: "enemy_ranged", scale: 0.075 }
 };
 
+const GRID_VISUALS = {
+  defense: { texture: "tile_defense_grid", tint: null },
+  // tile_resource_grid 仍有浅色边缘残留，暂用已批准的同结构格子加青绿色 tint。
+  resource: { texture: "tile_defense_grid", tint: 0x34d399 }
+};
+
 const GAME_ASSET_PATHS = {
+  home_planet_dawnstar: "assets/game/planets/home_planet_dawnstar.png",
+  void_portal: "assets/game/portals/void_portal.png",
   building_harvester: "assets/game/buildings/building_harvester.png",
   building_turret: "assets/game/buildings/building_turret.png",
   building_prism: "assets/game/buildings/building_prism.png",
@@ -32,13 +78,14 @@ const GAME_ASSET_PATHS = {
   enemy_tank: "assets/game/enemies/enemy_tank.png",
   enemy_shieldbreaker: "assets/game/enemies/enemy_shieldbreaker.png",
   enemy_ranged: "assets/game/enemies/enemy_ranged.png",
+  enemy_leaper: "assets/game/enemies/enemy_leaper.png",
   icon_star_energy: "assets/game/ui/icon_star_energy.png",
   icon_planet_hp: "assets/game/ui/icon_planet_hp.png",
   icon_wave: "assets/game/ui/icon_wave.png",
   icon_meteor_strike: "assets/game/ui/icon_meteor_strike.png",
   icon_demolish: "assets/game/ui/icon_demolish.png",
   icon_energy_upgrade: "assets/game/ui/icon_energy_upgrade.png",
-  bg_space_battlefield: "assets/game/backgrounds/bg_space_battlefield.png",
+  bg_space_battlefield_hd: "assets/game/backgrounds/bg_space_battlefield_hd.png",
   tile_defense_grid: "assets/game/tiles/tile_defense_grid.png"
 };
 
@@ -61,6 +108,13 @@ class SceneDemo extends Phaser.Scene {
     return text;
   }
 
+  // 顶部 HUD 使用更小内边距，避免在紧凑模块中挤出边框。
+  makeHudText(x, y, content, style = {}) {
+    const text = this.makeText(x, y, content, style);
+    text.setPadding(0, 2, 0, 2);
+    return text;
+  }
+
   addToFrontline(item) {
     this.frontlineLayer.add(item);
     return item;
@@ -80,6 +134,555 @@ class SceneDemo extends Phaser.Scene {
     return Boolean(this.textures?.exists?.(key));
   }
 
+  resetRunStats() {
+    this.runStats = {
+      highestWaveReached: 0,
+      completedWaves: 0,
+      totalKills: 0,
+      killsByType: {
+        basic: 0,
+        fast: 0,
+        tank: 0,
+        ranged: 0,
+        breaker: 0,
+        leaper: 0
+      }
+    };
+  }
+
+  resetSupplyState() {
+    this.clearSupplyVisuals();
+    this.firstLeftWingSupplyDelivered = false;
+    this.firstLeftWingSupplyStartWave = 0;
+    this.periodicSupplyWaves = new Set();
+    this.supplyCount = 0;
+    this.totalSupplyDelivered = 0;
+    this.supplyVisuals = [];
+    this.waveCompletionPending = false;
+  }
+
+  clearSupplyVisuals() {
+    for (const visual of this.supplyVisuals || []) {
+      this.tweens?.killTweensOf?.(visual);
+      visual?.destroy?.();
+    }
+    this.supplyVisuals = [];
+  }
+
+  recordEnemyKill(enemy) {
+    if (!enemy || enemy.killCounted || !this.runStats) return false;
+
+    const enemyType = enemy.type;
+
+    if (!(enemyType in this.runStats.killsByType)) return false;
+
+    enemy.killCounted = true;
+    this.runStats.totalKills++;
+    this.runStats.killsByType[enemyType]++;
+    return true;
+  }
+
+  getSurvivingBuildingSummary() {
+    const summary = {
+      collector: {},
+      turret: {},
+      prism: {},
+      shield: {}
+    };
+    const addLevel = (type, level) => {
+      const normalizedLevel = Math.max(1, level || 1);
+      summary[type][normalizedLevel] = (summary[type][normalizedLevel] || 0) + 1;
+    };
+
+    for (const building of this.buildings) {
+      if (building.destroyed || !this.isBuildingRegistered(building)) continue;
+
+      if (building.id === "collector") {
+        addLevel("collector", building.collectLevel);
+      } else if (building.id === "turret") {
+        addLevel("turret", building.defenseLevel);
+      } else if (building.id === "laser") {
+        addLevel("prism", building.defenseLevel);
+      }
+    }
+
+    for (const shield of this.shields) {
+      if (shield.destroyed || !this.isShieldRegistered(shield)) continue;
+      addLevel("shield", shield.shieldLevel);
+    }
+
+    return summary;
+  }
+
+  getRunSummary() {
+    return {
+      highestWaveReached: this.runStats.highestWaveReached,
+      completedWaves: this.runStats.completedWaves,
+      totalKills: this.runStats.totalKills,
+      killsByType: { ...this.runStats.killsByType },
+      survivingBuildings: this.getSurvivingBuildingSummary()
+    };
+  }
+
+  formatFinalDefenseLines(survivingBuildings) {
+    const buildingTypes = [
+      ["collector", "星尘采集器"],
+      ["turret", "星轨炮台"],
+      ["prism", "光棱卫星"],
+      ["shield", "引力护盾"]
+    ];
+
+    return buildingTypes.flatMap(([type, label]) => {
+      const levels = Object.entries(survivingBuildings[type] || {})
+        .map(([level, count]) => [Number(level), count])
+        .filter(([, count]) => count > 0)
+        .sort(([leftLevel], [rightLevel]) => leftLevel - rightLevel);
+
+      if (levels.length === 0) return [];
+
+      const levelText = levels
+        .map(([level, count]) => `Lv.${level} × ${count}`)
+        .join("，");
+      return [`${label}：${levelText}`];
+    });
+  }
+
+  triggerGameOver() {
+    if (this.isGameOver || this.gameState !== "playing") return false;
+
+    this.isGameOver = true;
+    this.gameState = "lost";
+    this.planetHp = 0;
+    this.waveActive = false;
+    this.waveSpawnTimer = 0;
+    this.waveStartTimer = 0;
+    this.waveQueue = [];
+    this.frontlineTransitioning = false;
+    this.gameOverSummary = this.getRunSummary();
+
+    this.cancelPendingMapAction();
+    this.cancelCardDrag();
+    this.clearCardSelection();
+    this.demolishMode = false;
+    this.updateDemolishButtonState();
+    this.updateMeteorPreview(this.input.activePointer);
+    this.hideMessage();
+    this.tweens.pauseAll?.();
+    this.updateUI();
+    this.showGameOverScreen();
+    return true;
+  }
+
+  showGameOverScreen() {
+    return this.showEndScreen({ result: "defeat", summary: this.gameOverSummary });
+  }
+
+  showVictoryScreen() {
+    return this.showEndScreen({ result: "victory", summary: this.gameEndSummary });
+  }
+
+  showEndScreen({ result, summary }) {
+    if (this.endScreenUi || !summary) return false;
+
+    const isVictory = result === "victory";
+    const defenseLines = this.formatFinalDefenseLines(summary.survivingBuildings);
+    const panelWidth = Math.min(620, this.W * 0.82);
+    const panelHeight = Math.min(this.H - 80, 330 + defenseLines.length * 27);
+    const panelX = this.W / 2;
+    const panelY = this.H / 2;
+    const panelTop = panelY - panelHeight / 2;
+    const overlay = this.add.rectangle(panelX, panelY, this.W, this.H, 0x020617, UI_THEME.panel.overlayAlpha);
+    overlay.setDepth(200);
+    overlay.setInteractive();
+    overlay.on("pointerdown", () => this.beginFixedUiInteraction());
+
+    const panel = this.add.rectangle(panelX, panelY, panelWidth, panelHeight, UI_THEME.panel.fill, 0.96);
+    panel.setStrokeStyle(1, UI_THEME.panel.border, 0.9);
+    panel.setDepth(201);
+    const panelAccent = this.add.rectangle(panelX, panelTop + 8, panelWidth - 64, 2, isVictory ? 0xfacc15 : 0xfb7185, 0.72);
+    panelAccent.setDepth(202);
+
+    const addPanelText = (x, y, content, style) => {
+      const text = this.makeText(x, y, content, style);
+      text.setDepth(202);
+      return text;
+    };
+
+    const title = addPanelText(panelX, panelTop + 28, isVictory ? "恭喜你成功守护晨曦星" : "晨曦星失守", {
+      fontSize: "30px",
+      color: isVictory ? "#facc15" : "#fb7185",
+      fontStyle: "bold"
+    });
+    title.setOrigin(0.5, 0);
+
+    const subtitle = addPanelText(panelX, panelTop + 76, isVictory
+      ? "虚空潮汐暂时退去，晨曦星迎来了新的黎明。"
+      : "虚空潮汐突破了最后防线", {
+      fontSize: "17px",
+      color: "#cbd5e1"
+    });
+    subtitle.setOrigin(0.5, 0);
+
+    const statLines = isVictory ? [
+      `完成波数：${summary.completedWaves}`,
+      `击败怪物：${summary.totalKills}`
+    ] : [
+      `到达波数：${summary.highestWaveReached}`,
+      `完成波数：${summary.completedWaves}`,
+      `击败怪物：${summary.totalKills}`
+    ];
+    const stats = addPanelText(panelX, panelTop + 122, statLines.join("   "), {
+      fontSize: "19px",
+      color: "#e0f2fe",
+      fontStyle: "bold"
+    });
+    stats.setOrigin(0.5, 0);
+
+    const divider = this.add.rectangle(panelX, panelTop + 173, panelWidth - 76, 1, UI_THEME.panel.divider, 0.7);
+    divider.setDepth(202);
+
+    const defenseHeader = addPanelText(panelX - panelWidth / 2 + 38, panelTop + 190, "最终防线", {
+      fontSize: "18px",
+      color: "#93c5fd",
+      fontStyle: "bold"
+    });
+
+    if (defenseLines.length === 0) {
+      const emptyLine = addPanelText(panelX, panelTop + 224, isVictory
+        ? "最终防线：防线虽已耗尽，但晨曦星成功获救"
+        : "最终防线：已全数失守", {
+        fontSize: "17px",
+        color: "#cbd5e1"
+      });
+      emptyLine.setOrigin(0.5, 0);
+    } else {
+      defenseLines.forEach((line, index) => {
+        addPanelText(panelX - panelWidth / 2 + 42, panelTop + 220 + index * 27, line, {
+          fontSize: "16px",
+          color: "#dbeafe"
+        });
+      });
+    }
+
+    const restartButton = this.add.rectangle(panelX, panelTop + panelHeight - 43, 250, 56, UI_THEME.panel.buttonFill, 0.96);
+    restartButton.setStrokeStyle(1, UI_THEME.panel.buttonBorder, 1);
+    restartButton.setDepth(202);
+    restartButton.setInteractive({ useHandCursor: true });
+
+    const restartLabel = addPanelText(panelX, panelTop + panelHeight - 44, "再来一次", {
+      fontSize: "21px",
+      color: "#e0f2fe",
+      fontStyle: "bold"
+    });
+    restartLabel.setOrigin(0.5, 0.5);
+
+    restartButton.on("pointerover", () => {
+      if (!this.restartRequested) restartButton.setStrokeStyle(2, 0xe0f7ff, 1);
+    });
+    restartButton.on("pointerout", () => {
+      if (!this.restartRequested) restartButton.setStrokeStyle(1, UI_THEME.panel.buttonBorder, 1);
+    });
+    restartButton.on("pointerdown", () => {
+      this.beginFixedUiInteraction();
+      this.restartGame();
+    });
+
+    const ui = { overlay, panel, panelAccent, restartButton, restartLabel, result };
+    this.endScreenUi = ui;
+    if (!isVictory) this.gameOverUi = ui;
+    return true;
+  }
+
+  restartGame() {
+    if ((!this.isGameOver && this.gameState !== "won") || this.restartRequested || !this.scene?.restart) return false;
+
+    this.restartRequested = true;
+    this.endScreenUi?.restartButton?.disableInteractive?.();
+    this.gameOverUi?.restartButton?.disableInteractive?.();
+    this.clearSupplyVisuals();
+    this.scene.restart();
+    return true;
+  }
+
+  shouldShowStageChoice(completedWave) {
+    return (
+      this.gameState === "playing" &&
+      !this.isGameOver &&
+      completedWave >= 30 &&
+      completedWave % 10 === 0 &&
+      !this.stageChoiceWaves.has(completedWave)
+    );
+  }
+
+  destroyStageChoiceScreen() {
+    const elements = this.stageChoiceUi?.elements || [];
+    for (const element of elements) element?.destroy?.();
+    this.stageChoiceUi = null;
+  }
+
+  showStageChoiceScreen(completedWave) {
+    if (!this.shouldShowStageChoice(completedWave) || this.stageChoiceActive) return false;
+
+    this.stageChoiceActive = true;
+    this.stageChoiceResolved = false;
+    this.stageChoiceWave = completedWave;
+    this.stageChoiceWaves.add(completedWave);
+    this.gameState = "stage_choice";
+    this.waveActive = false;
+    this.waveSpawnTimer = 0;
+    this.waveStartTimer = 0;
+    this.cancelPendingMapAction();
+    this.cancelCardDrag();
+    this.clearCardSelection();
+    this.demolishMode = false;
+    this.updateDemolishButtonState();
+    this.updateMeteorPreview(this.input.activePointer);
+    this.tweens.pauseAll?.();
+
+    const panelWidth = Math.min(610, this.W * 0.82);
+    const panelHeight = 330;
+    const panelX = this.W / 2;
+    const panelY = this.H / 2;
+    const panelTop = panelY - panelHeight / 2;
+    const elements = [];
+    const track = (element) => {
+      elements.push(element);
+      return element;
+    };
+    const overlay = track(this.add.rectangle(panelX, panelY, this.W, this.H, 0x020617, UI_THEME.panel.overlayAlpha));
+    overlay.setDepth(180);
+    overlay.setInteractive();
+    overlay.on("pointerdown", () => this.beginFixedUiInteraction());
+
+    const panel = track(this.add.rectangle(panelX, panelY, panelWidth, panelHeight, UI_THEME.panel.fill, 0.96));
+    panel.setStrokeStyle(1, UI_THEME.panel.border, 0.9);
+    panel.setDepth(181);
+    const panelAccent = track(this.add.rectangle(panelX, panelTop + 8, panelWidth - 64, 2, 0xfacc15, 0.72));
+    panelAccent.setDepth(182);
+
+    const addPanelText = (x, y, content, style) => {
+      const text = track(this.makeText(x, y, content, style));
+      text.setDepth(182);
+      return text;
+    };
+
+    const title = addPanelText(panelX, panelTop + 30, "阶段守护完成", {
+      fontSize: "30px",
+      color: "#facc15",
+      fontStyle: "bold"
+    });
+    title.setOrigin(0.5, 0);
+
+    const copy = addPanelText(panelX, panelTop + 82, "晨曦星暂时恢复了平静。\n你可以结束本次守护，也可以继续迎战更强的虚空潮汐。", {
+      fontSize: "17px",
+      color: "#cbd5e1",
+      align: "center",
+      lineSpacing: 8
+    });
+    copy.setOrigin(0.5, 0);
+
+    const stats = addPanelText(panelX, panelTop + 156, `已完成波数：${completedWave}    当前击败怪物：${this.runStats.totalKills}`, {
+      fontSize: "19px",
+      color: "#e0f2fe",
+      fontStyle: "bold"
+    });
+    stats.setOrigin(0.5, 0);
+
+    const createButton = (x, color, borderColor, label, handler) => {
+      const button = track(this.add.rectangle(x, panelTop + panelHeight - 58, 220, 54, color, 0.96));
+      button.setStrokeStyle(1, borderColor, 1);
+      button.setDepth(182);
+      button.setInteractive({ useHandCursor: true });
+      const buttonLabel = addPanelText(x, panelTop + panelHeight - 59, label, {
+        fontSize: "19px",
+        color: "#f8fafc",
+        fontStyle: "bold"
+      });
+      buttonLabel.setOrigin(0.5, 0.5);
+      button.on("pointerdown", () => {
+        this.beginFixedUiInteraction();
+        handler();
+      });
+      return button;
+    };
+
+    const continueButton = createButton(panelX - 122, UI_THEME.panel.buttonFill, UI_THEME.panel.buttonBorder, "继续守护", () => this.continueStageGuard());
+    const endButton = createButton(panelX + 122, 0x2e1b52, 0xc4b5fd, "结束本局", () => this.endRunFromStageChoice());
+    this.stageChoiceUi = { elements, overlay, panel, continueButton, endButton };
+    this.updateUI();
+    return true;
+  }
+
+  advanceAfterCompletedWave(completedWave) {
+    if (this.gameState !== "playing") return false;
+
+    this.waveSpawned = 0;
+    this.waveQueue = [];
+    this.waveStartTimer = this.waveRestTime;
+
+    if (completedWave % this.wavesPerFrontline === 0) {
+      this.switchFrontline(completedWave);
+    } else {
+      this.showMessage(`第 ${completedWave} 波清除`);
+    }
+
+    return true;
+  }
+
+  getPeriodicSupplyAmount() {
+    return Math.floor(this.maxStarEnergy * 0.4);
+  }
+
+  shouldDeliverPeriodicSupply(completedWave) {
+    return (
+      this.gameState === "playing" &&
+      this.firstLeftWingSupplyDelivered &&
+      completedWave > this.firstLeftWingSupplyStartWave &&
+      completedWave % 5 === 0 &&
+      !this.periodicSupplyWaves.has(completedWave)
+    );
+  }
+
+  grantDawnstarSupply(requestedAmount, label, onComplete = null) {
+    const amount = Math.max(0, Math.floor(requestedAmount));
+    const actualAmount = Math.max(0, Math.min(amount, this.maxStarEnergy - this.starEnergy));
+
+    this.addStarEnergy(actualAmount);
+    this.supplyCount++;
+    this.totalSupplyDelivered += actualAmount;
+    if (this.messageText && this.messageContainer) {
+      this.showMessage(`${label}  +${actualAmount} 星能`, "reward");
+    }
+    this.playDawnstarSupplyAnimation(label, actualAmount, onComplete);
+    return actualAmount;
+  }
+
+  deliverFirstLeftWingSupply(onComplete = null) {
+    if (this.firstLeftWingSupplyDelivered || this.activeWing !== "left" || this.gameState !== "playing") {
+      onComplete?.();
+      return false;
+    }
+
+    this.firstLeftWingSupplyDelivered = true;
+    this.firstLeftWingSupplyStartWave = this.currentWaveIndex + 1;
+    this.grantDawnstarSupply(30, "先锋补给", onComplete);
+    return true;
+  }
+
+  deliverPeriodicSupply(completedWave, onComplete = null) {
+    if (!this.shouldDeliverPeriodicSupply(completedWave)) {
+      onComplete?.();
+      return false;
+    }
+
+    this.periodicSupplyWaves.add(completedWave);
+    this.grantDawnstarSupply(this.getPeriodicSupplyAmount(), "晨曦星补给", onComplete);
+    return true;
+  }
+
+  playDawnstarSupplyAnimation(label, amount, onComplete = null) {
+    const finish = (() => {
+      let finished = false;
+      return () => {
+        if (finished) return;
+        finished = true;
+        this.clearSupplyVisuals();
+        onComplete?.();
+      };
+    })();
+
+    if (!this.add || !this.tweens?.add) {
+      finish();
+      return;
+    }
+
+    const sourceX = this.planetX + (this.enemyDirection < 0 ? 54 : -54);
+    const sourceY = this.planetY - 8;
+    const targetX = this.energyText?.x || 320;
+    const targetY = 42;
+    const pod = this.addToFrontline(this.add.rectangle(sourceX, sourceY, 18, 14, 0x93c5fd, 0.98));
+    const core = this.addToFrontline(this.add.circle(sourceX, sourceY, 5, 0xfef3c7, 0.98));
+    const trail = this.addToFrontline(this.add.circle(sourceX, sourceY, 12, 0x60a5fa, 0.22));
+
+    pod.setStrokeStyle(2, 0xdbeafe, 0.95).setDepth(96);
+    core.setDepth(97);
+    trail.setDepth(95);
+    this.supplyVisuals = [pod, core, trail];
+
+    this.tweens.add({
+      targets: [pod, core, trail],
+      x: targetX,
+      y: targetY,
+      duration: 820,
+      ease: "Cubic.easeInOut",
+      onComplete: () => {
+        const burst = this.add.circle(targetX, targetY, 14, 0x93c5fd, 0.55).setDepth(98);
+        this.supplyVisuals.push(burst);
+        this.floatText(targetX, targetY + 18, `${label}  +${amount} 星能`, "#dbeafe");
+        this.tweens.add({
+          targets: burst,
+          scale: 2.2,
+          alpha: 0,
+          duration: 260,
+          onComplete: finish
+        });
+      }
+    });
+  }
+
+  processCompletedWave(completedWave) {
+    const continueAfterSupply = () => {
+      if (this.gameState !== "playing") return;
+      this.waveCompletionPending = false;
+      if (this.shouldShowStageChoice(completedWave)) {
+        this.showStageChoiceScreen(completedWave);
+      } else {
+        this.advanceAfterCompletedWave(completedWave);
+      }
+    };
+
+    this.waveCompletionPending = true;
+    this.deliverPeriodicSupply(completedWave, continueAfterSupply);
+  }
+
+  continueStageGuard() {
+    if (!this.stageChoiceActive || this.stageChoiceResolved || this.gameState !== "stage_choice") return false;
+
+    const completedWave = this.stageChoiceWave;
+    this.stageChoiceResolved = true;
+    this.stageChoiceActive = false;
+    this.destroyStageChoiceScreen();
+    this.tweens.resumeAll?.();
+    this.gameState = "playing";
+    this.advanceAfterCompletedWave(completedWave);
+    this.updateUI();
+    return true;
+  }
+
+  endRunFromStageChoice() {
+    if (!this.stageChoiceActive || this.stageChoiceResolved || this.gameState !== "stage_choice") return false;
+
+    this.stageChoiceResolved = true;
+    this.stageChoiceActive = false;
+    this.destroyStageChoiceScreen();
+    this.gameEndSummary = this.getRunSummary();
+    this.gameState = "won";
+    this.waveActive = false;
+    this.waveSpawnTimer = 0;
+    this.waveStartTimer = 0;
+    this.waveQueue = [];
+    this.cancelPendingMapAction();
+    this.cancelCardDrag();
+    this.clearCardSelection();
+    this.demolishMode = false;
+    this.updateDemolishButtonState();
+    this.updateMeteorPreview(this.input.activePointer);
+    this.hideMessage();
+    this.updateUI();
+    this.showVictoryScreen();
+    return true;
+  }
+
   create() {
     this.cameras.main.setRoundPixels(true);
 
@@ -89,7 +692,9 @@ class SceneDemo extends Phaser.Scene {
     // 星能系统
     this.starEnergy = 10;
     this.maxStarEnergy = 50;
-    this.energyRegen = 0; // 取消自然恢复，星能主要来自采集器和击杀返还。
+    this.energyRegen = 1;
+    this.energyRegenInterval = 5;
+    this.energyRegenTimer = 0;
 
     this.planetHp = 100;
     this.selectedCard = null;
@@ -102,6 +707,21 @@ class SceneDemo extends Phaser.Scene {
     this.enemies = [];
     this.projectiles = [];
     this.storedCollectors = [];
+    this.activeWing = "right";
+    this.wingStates = this.createWingStates();
+    this.resetRunStats();
+    this.resetSupplyState();
+    this.isGameOver = false;
+    this.gameOverSummary = null;
+    this.gameOverUi = null;
+    this.endScreenUi = null;
+    this.restartRequested = false;
+    this.stageChoiceActive = false;
+    this.stageChoiceResolved = false;
+    this.stageChoiceWave = 0;
+    this.stageChoiceWaves = new Set();
+    this.stageChoiceUi = null;
+    this.gameEndSummary = null;
     this.gameState = "playing";
     this.frontlineTransitioning = false;
     this.demolishMode = false;
@@ -115,49 +735,45 @@ class SceneDemo extends Phaser.Scene {
     this.battlefieldPanStartX = 0;
     this.cardDragState = { active: false, candidateCard: null, card: null, startX: 0, startY: 0, ghost: null, outline: null, valid: false };
 
-    // 星尘采集器等级配置：数值集中在这里，后面调节经济节奏更方便。
-    this.collectorMaxLevel = 5;
-    this.collectorLevels = {
-      1: { amount: 1, interval: 8, color: 0x22c55e, textColor: "#86efac" },
-      2: { amount: 2, interval: 7, color: 0x14b8a6, textColor: "#67e8f9" },
-      3: { amount: 3, interval: 6, color: 0xfacc15, textColor: "#fde68a" },
-      4: { amount: 4, interval: 5.5, color: 0xf97316, textColor: "#fed7aa" },
-      5: { amount: 5, interval: 5, color: 0xe879f9, textColor: "#f5d0fe" }
-    };
-    this.collectorUpgradeCosts = {
-      1: 6,
-      2: 8,
-      3: 10,
-      4: 12
-    };
-
-    // 防御建筑等级配置：炮台和光棱都先做 3 级，后续可继续补分支特性。
-    this.defenseMaxLevel = 3;
-    this.defenseLevels = {
+    // 建筑无限升级配置：属性和费用均由统一计算接口生成，不维护独立升级计时器。
+    this.buildingProgressionConfig = {
+      collector: {
+        amount: 1,
+        intervalFloor: 2.5,
+        intervalBase: 10,
+        intervalDecay: 0.92,
+        costBase: 6,
+        costStep: 3,
+        costCap: 90,
+        color: 0x22c55e,
+        textColor: "#86efac"
+      },
       turret: {
-        1: { damage: 4, cooldown: 0.95, range: 250, color: 0x38bdf8, textColor: "#bae6fd" },
-        2: { damage: 6, cooldown: 0.82, range: 285, color: 0x0ea5e9, textColor: "#7dd3fc" },
-        3: { damage: 8, cooldown: 0.72, range: 320, color: 0x60a5fa, textColor: "#dbeafe" }
+        baseStats: {
+          1: { damage: 4, cooldown: 0.95, range: 250, color: 0x38bdf8, textColor: "#bae6fd" },
+          2: { damage: 6, cooldown: 0.82, range: 285, color: 0x0ea5e9, textColor: "#7dd3fc" },
+          3: { damage: 8, cooldown: 0.72, range: 320, color: 0x60a5fa, textColor: "#dbeafe" }
+        },
+        cooldownFloor: 0.4,
+        costCap: 90
       },
       laser: {
-        1: { damage: 9, cooldown: 1.45, range: 560, color: 0xfacc15, textColor: "#fde68a" },
-        2: { damage: 13, cooldown: 1.3, range: 600, color: 0xf97316, textColor: "#fed7aa" },
-        3: { damage: 17, cooldown: 1.15, range: 640, color: 0xfef3c7, textColor: "#fef9c3" }
+        baseStats: {
+          1: { damage: 9, cooldown: 1.45, range: 560, color: 0xfacc15, textColor: "#fde68a" },
+          2: { damage: 13, cooldown: 1.3, range: 600, color: 0xf97316, textColor: "#fed7aa" },
+          3: { damage: 17, cooldown: 1.15, range: 640, color: 0xfef3c7, textColor: "#fef9c3" }
+        },
+        cooldownFloor: 0.65,
+        costCap: 95
+      },
+      shield: {
+        baseStats: {
+          1: { maxHp: 24, color: 0x93c5fd, textColor: "#dbeafe" },
+          2: { maxHp: 36, color: 0x38bdf8, textColor: "#bae6fd" },
+          3: { maxHp: 50, color: 0xfacc15, textColor: "#fde68a" }
+        },
+        costCap: 90
       }
-    };
-    this.defenseUpgradeCosts = {
-      turret: { 1: 4, 2: 6 },
-      laser: { 1: 7, 2: 10 }
-    };
-    this.shieldMaxLevel = 3;
-    this.shieldLevels = {
-      1: { color: 0x93c5fd, textColor: "#dbeafe" },
-      2: { color: 0x38bdf8, textColor: "#bae6fd" },
-      3: { color: 0xfacc15, textColor: "#fde68a" }
-    };
-    this.shieldUpgradeCosts = {
-      1: 5,
-      2: 7
     };
 
     // 建筑与护盾耐久集中配置；当前均为临时测试值，等待后续平衡阶段调整。
@@ -166,11 +782,6 @@ class SceneDemo extends Phaser.Scene {
         collector: { maxHp: 40, collisionHalfWidth: 22 },
         turret: { maxHp: 60, collisionHalfWidth: 22 },
         laser: { maxHp: 50, collisionHalfWidth: 22 }
-      },
-      shield: {
-        1: { maxHp: 24 },
-        2: { maxHp: 36 },
-        3: { maxHp: 50 }
       },
       healthBar: {
         buildingWidth: 42,
@@ -194,6 +805,7 @@ class SceneDemo extends Phaser.Scene {
     // 无尽波次：每 10 波切换一次左右战区，敌人血量随波次持续叠加。
     this.currentWaveIndex = 0;
     this.waveSpawned = 0;
+    this.waveQueue = [];
     this.waveActive = false;
     this.waveStartTimer = 2.5;
     this.waveSpawnTimer = 0;
@@ -202,17 +814,82 @@ class SceneDemo extends Phaser.Scene {
     this.frontlineIndex = 1;
     this.enemyDirection = -1;
     this.waveTemplates = [
-      { count: 3, interval: 2.8, hp: 14, speed: 40, damage: 10, reward: 1 },
-      { count: 4, interval: 2.7, hp: 16, speed: 41, damage: 10, reward: 1 },
-      { count: 4, interval: 2.6, hp: 19, speed: 42, damage: 11, reward: 1 },
-      { count: 5, interval: 2.5, hp: 22, speed: 43, damage: 11, reward: 1 },
-      { count: 5, interval: 2.4, hp: 25, speed: 44, damage: 12, reward: 1 },
-      { count: 6, interval: 2.3, hp: 29, speed: 45, damage: 12, reward: 1 },
-      { count: 6, interval: 2.2, hp: 33, speed: 46, damage: 13, reward: 2 },
-      { count: 7, interval: 2.1, hp: 37, speed: 48, damage: 13, reward: 2 },
-      { count: 7, interval: 2.0, hp: 42, speed: 49, damage: 14, reward: 2 },
-      { count: 8, interval: 1.9, hp: 48, speed: 50, damage: 14, reward: 2 }
+      { count: 3, interval: 2.8, hp: 14, speed: 40, damage: 10, reward: 0 },
+      { count: 4, interval: 2.7, hp: 16, speed: 41, damage: 10, reward: 0 },
+      { count: 4, interval: 2.6, hp: 19, speed: 42, damage: 11, reward: 0 },
+      { count: 5, interval: 2.5, hp: 22, speed: 43, damage: 11, reward: 0 },
+      { count: 5, interval: 2.4, hp: 25, speed: 44, damage: 12, reward: 0 },
+      { count: 6, interval: 2.3, hp: 29, speed: 45, damage: 12, reward: 0 },
+      { count: 6, interval: 2.2, hp: 33, speed: 46, damage: 13, reward: 0 },
+      { count: 7, interval: 2.1, hp: 37, speed: 48, damage: 13, reward: 0 },
+      { count: 7, interval: 2.0, hp: 42, speed: 49, damage: 14, reward: 0 },
+      { count: 8, interval: 1.9, hp: 48, speed: 50, damage: 14, reward: 0 }
     ];
+    this.wavePressureConfig = {
+      countBonusesByDecade: [0, 4, 8, 13, 19, 26, 34, 43],
+      extraCountBonusPerDecade: 9,
+      spawnIntervalMultipliers: [1, 0.85, 0.72, 0.62, 0.55, 0.5],
+      minimumSpawnInterval: 0.8
+    };
+    this.enemySpawnConfig = {
+      basic: {
+        hpMultiplier: 1,
+        speedMultiplier: 1,
+        damageMultiplier: 1,
+        killReward: 0
+      },
+      fast: {
+        hpMultiplier: 0.7,
+        speedMultiplier: 1.8,
+        damageMultiplier: 1,
+        killReward: 0
+      },
+      tank: {
+        hpMultiplier: 2.5,
+        speedMultiplier: 0.6,
+        damageMultiplier: 1.4,
+        killReward: 1
+      },
+      breaker: {
+        hpMultiplier: 1.3,
+        speedMultiplier: 0.9,
+        damageMultiplier: 1.1,
+        attackCooldown: 1,
+        shieldDamageMultiplier: 2.5,
+        killReward: 1,
+        minWave: 17,
+        waveRatio: 0.1
+      },
+      leaper: {
+        hpMultiplier: 0.8,
+        speedMultiplier: 1.25,
+        damageMultiplier: 1,
+        attackCooldown: 1,
+        killReward: 1,
+        minWave: 21,
+        waveRatio: 0.1
+      },
+      ranged: {
+        hpMultiplier: 0.9,
+        speedMultiplier: 0.75,
+        damageMultiplier: 1,
+        attackCooldown: 1.4,
+        attackRange: 150,
+        killReward: 1,
+        minWave: 13,
+        waveRatio: 0.1
+      },
+      waveCompositions: [
+        { maxWave: 5, basic: 1, fast: 0, tank: 0 },
+        { maxWave: 8, basic: 0.85, fast: 0.15, tank: 0 },
+        { maxWave: 10, basic: 0.65, fast: 0.25, tank: 0.1 },
+        { maxWave: 12, basic: 0.5, fast: 0.3, tank: 0.2 },
+        { maxWave: 16, basic: 0.45, fast: 0.25, tank: 0.2, ranged: 0.1 },
+        { maxWave: 20, basic: 0.35, fast: 0.2, tank: 0.25, ranged: 0.1, breaker: 0.1 },
+        { maxWave: Infinity, basic: 0.3, fast: 0.2, tank: 0.2, ranged: 0.1, breaker: 0.1, leaper: 0.1 }
+      ],
+      specialRotation: ["ranged", "breaker", "leaper"]
+    };
 
     this.createBackground();
     this.createTitle();
@@ -247,6 +924,7 @@ class SceneDemo extends Phaser.Scene {
 
     if (this.gameState !== "playing") return;
 
+    this.updateStarEnergy(dt);
     this.updateCollectors(dt);
 
     if (this.frontlineTransitioning) return;
@@ -262,40 +940,31 @@ class SceneDemo extends Phaser.Scene {
     const W = this.W;
     const H = this.H;
 
-    this.add.rectangle(W / 2, H / 2, W, H, 0x030712);
+    const fallbackBackground = this.add.rectangle(W / 2, H / 2, W, H, 0x030712);
+    fallbackBackground.setDepth(-1000);
 
-    if (this.hasTexture("bg_space_battlefield")) {
-      const background = this.add.image(W / 2, H / 2 - 25, "bg_space_battlefield");
-      background.setScale(1.35);
-      background.setAlpha(0.72);
-      background.setDepth(-10);
+    if (this.hasTexture("bg_space_battlefield_hd")) {
+      const source = this.textures.get("bg_space_battlefield_hd").getSourceImage();
+      const coverScale = Math.max(W / source.width, H / source.height);
+
+      this.battlefieldBackground = this.add.image(W / 2, H / 2, "bg_space_battlefield_hd");
+      this.battlefieldBackground.setScale(coverScale);
+      this.battlefieldBackground.setAlpha(1);
+      this.battlefieldBackground.setDepth(-999);
     }
 
-    this.add.circle(880, 240, 280, 0x1e1b4b, 0.16);
-    this.add.circle(980, 500, 330, 0x312e81, 0.10);
-    this.add.circle(430, 240, 260, 0x0f172a, 0.45);
-    this.add.circle(640, 620, 420, 0x020617, 0.45);
+    this.backgroundShade = this.add.rectangle(W / 2, H / 2, W, H, 0x020617, 0.08);
+    this.backgroundShade.setDepth(-998);
 
-    for (let i = 0; i < 150; i++) {
+    // 正式背景已经包含星云和星点，只保留少量轻微前景星尘。
+    for (let i = 0; i < 28; i++) {
       const x = Phaser.Math.Between(0, W);
       const y = Phaser.Math.Between(0, H - 120);
-      const r = Phaser.Math.FloatBetween(0.6, 1.8);
-      const a = Phaser.Math.FloatBetween(0.18, 0.75);
-      this.add.circle(x, y, r, 0xe5e7eb, a);
+      const radius = Phaser.Math.FloatBetween(0.6, 1.4);
+      const alpha = Phaser.Math.FloatBetween(0.12, 0.34);
+      const star = this.add.circle(x, y, radius, 0xe5e7eb, alpha);
+      star.setDepth(-997);
     }
-
-    for (let i = 0; i < 16; i++) {
-      const x = Phaser.Math.Between(40, W - 40);
-      const y = Phaser.Math.Between(40, H - 150);
-
-      this.add.circle(x, y, 2.2, 0xffffff, 0.85);
-      this.add.circle(x, y, 6, 0x93c5fd, 0.08);
-    }
-
-    this.add.rectangle(W / 2, 0, W, 130, 0x000000, 0.18);
-    this.add.rectangle(W / 2, H - 60, W, 150, 0x000000, 0.25);
-    this.add.rectangle(0, H / 2, 180, H, 0x000000, 0.20);
-    this.add.rectangle(W, H / 2, 180, H, 0x000000, 0.20);
   }
 
   createTitle() {
@@ -318,6 +987,10 @@ class SceneDemo extends Phaser.Scene {
       color: "#8aa4bd"
     });
     this.subtitleText.setDepth(91);
+
+    // HUD 已承接顶部信息，标题不再占用战场视野。
+    this.titleText.setVisible(false);
+    this.subtitleText.setVisible(false);
   }
 
   createPlanet() {
@@ -333,13 +1006,19 @@ class SceneDemo extends Phaser.Scene {
     const planetGlow1 = keepPlanet(this.add.circle(this.planetX, this.planetY, 95, 0x1d4ed8, 0.10));
     const planetGlow2 = keepPlanet(this.add.circle(this.planetX, this.planetY, 72, 0x60a5fa, 0.12));
 
-    keepPlanet(this.add.circle(this.planetX, this.planetY, 58, 0x0f3b82, 1));
-    keepPlanet(this.add.circle(this.planetX - 8, this.planetY - 8, 52, 0x2563eb, 0.95));
-    keepPlanet(this.add.circle(this.planetX - 20, this.planetY - 20, 30, 0x60a5fa, 0.30));
-    keepPlanet(this.add.circle(this.planetX + 18, this.planetY + 18, 50, 0x020617, 0.20));
+    if (this.hasTexture("home_planet_dawnstar")) {
+      // 正式主体保持静止，外围光晕单独提供轻微能量变化。
+      keepPlanet(this.add.image(this.planetX, this.planetY, "home_planet_dawnstar").setScale(0.23));
+    } else {
+      // 正式图片加载失败时保留原有程序绘制晨曦星。
+      keepPlanet(this.add.circle(this.planetX, this.planetY, 58, 0x0f3b82, 1));
+      keepPlanet(this.add.circle(this.planetX - 8, this.planetY - 8, 52, 0x2563eb, 0.95));
+      keepPlanet(this.add.circle(this.planetX - 20, this.planetY - 20, 30, 0x60a5fa, 0.30));
+      keepPlanet(this.add.circle(this.planetX + 18, this.planetY + 18, 50, 0x020617, 0.20));
 
-    const planetEdge = keepPlanet(this.add.circle(this.planetX, this.planetY, 60, 0x000000, 0));
-    planetEdge.setStrokeStyle(4, 0xbfdbfe, 0.95);
+      const planetEdge = keepPlanet(this.add.circle(this.planetX, this.planetY, 60, 0x000000, 0));
+      planetEdge.setStrokeStyle(4, 0xbfdbfe, 0.95);
+    }
 
     const orbit1 = keepPlanet(this.add.ellipse(this.planetX, this.planetY, 160, 116));
     orbit1.setStrokeStyle(1, 0x93c5fd, 0.18);
@@ -374,28 +1053,51 @@ class SceneDemo extends Phaser.Scene {
     };
 
     const portalGlow = keepPortal(this.add.circle(this.portalX, this.portalY, 84, 0x7e22ce, 0.16));
+    let portalBody = null;
 
-    const portalOuter = keepPortal(this.add.circle(this.portalX, this.portalY, 54, 0x581c87, 0.85));
-    portalOuter.setStrokeStyle(5, 0xc084fc, 0.95);
+    if (this.hasTexture("void_portal")) {
+      // 正式裂隙素材只替换视觉主体，出生点仍然固定使用 portalX / portalY。
+      portalBody = keepPortal(this.add.image(this.portalX, this.portalY, "void_portal").setScale(0.20));
+    } else {
+      // 正式素材加载失败时保留原有程序绘制裂隙。
+      const portalOuter = keepPortal(this.add.circle(this.portalX, this.portalY, 54, 0x581c87, 0.85));
+      portalOuter.setStrokeStyle(5, 0xc084fc, 0.95);
 
-    const portalRing2 = keepPortal(this.add.circle(this.portalX, this.portalY, 40, 0x7e22ce, 0.32));
-    portalRing2.setStrokeStyle(3, 0xf0abfc, 0.45);
+      const portalRing2 = keepPortal(this.add.circle(this.portalX, this.portalY, 40, 0x7e22ce, 0.32));
+      portalRing2.setStrokeStyle(3, 0xf0abfc, 0.45);
 
-    keepPortal(this.add.circle(this.portalX, this.portalY, 23, 0x07020f, 1));
+      keepPortal(this.add.circle(this.portalX, this.portalY, 23, 0x07020f, 1));
 
-    for (let i = 0; i < 22; i++) {
-      const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
-      const dist = Phaser.Math.FloatBetween(44, 78);
-      const px = this.portalX + Math.cos(angle) * dist;
-      const py = this.portalY + Math.sin(angle) * dist;
+      for (let i = 0; i < 22; i++) {
+        const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
+        const dist = Phaser.Math.FloatBetween(44, 78);
+        const px = this.portalX + Math.cos(angle) * dist;
+        const py = this.portalY + Math.sin(angle) * dist;
 
-      const p = keepPortal(this.add.circle(px, py, Phaser.Math.FloatBetween(1.5, 3), 0xe879f9, 0.55));
+        const p = keepPortal(this.add.circle(px, py, Phaser.Math.FloatBetween(1.5, 3), 0xe879f9, 0.55));
+
+        this.tweens.add({
+          targets: p,
+          alpha: 0.1,
+          scale: 1.6,
+          duration: Phaser.Math.Between(700, 1500),
+          yoyo: true,
+          repeat: -1
+        });
+      }
 
       this.tweens.add({
-        targets: p,
-        alpha: 0.1,
-        scale: 1.6,
-        duration: Phaser.Math.Between(700, 1500),
+        targets: portalOuter,
+        angle: 360,
+        duration: 3200,
+        repeat: -1
+      });
+
+      this.tweens.add({
+        targets: portalRing2,
+        scale: 1.12,
+        alpha: 0.52,
+        duration: 900,
         yoyo: true,
         repeat: -1
       });
@@ -406,21 +1108,14 @@ class SceneDemo extends Phaser.Scene {
       color: "#f3d5ff"
     }));
 
-    this.tweens.add({
-      targets: portalOuter,
-      angle: 360,
-      duration: 3200,
-      repeat: -1
-    });
-
-    this.tweens.add({
-      targets: portalRing2,
-      scale: 1.12,
-      alpha: 0.52,
-      duration: 900,
-      yoyo: true,
-      repeat: -1
-    });
+    if (portalBody) {
+      this.tweens.add({
+        targets: portalBody,
+        angle: -360,
+        duration: 12000,
+        repeat: -1
+      });
+    }
 
     this.tweens.add({
       targets: portalGlow,
@@ -448,7 +1143,7 @@ class SceneDemo extends Phaser.Scene {
       this.cols * this.cellW + 34,
       this.rows * this.cellH + 34,
       0x020617,
-      0.34
+      0.18
     ));
     fieldBg.setStrokeStyle(1, 0x1e3a8a, 0.28);
 
@@ -476,12 +1171,24 @@ class SceneDemo extends Phaser.Scene {
         const y = this.startY + row * this.cellH;
         const isLogistics = col === this.getLogisticsColumn();
 
-        keepField(this.add.rectangle(x + 3, y + 4, this.cellW - 10, this.cellH - 10, 0x000000, 0.25));
+        keepField(this.add.rectangle(x + 3, y + 4, this.cellW - 10, this.cellH - 10, 0x000000, 0.16));
 
-        if (this.hasTexture("tile_defense_grid") && !isLogistics) {
-          const tile = keepField(this.add.image(x, y, "tile_defense_grid"));
-          tile.setScale(0.13);
-          tile.setAlpha(0.20);
+        const tileVisual = isLogistics ? GRID_VISUALS.resource : GRID_VISUALS.defense;
+        let tile = null;
+
+        if (this.hasTexture(tileVisual.texture)) {
+          const frame = this.textures.getFrame(tileVisual.texture);
+          const tileScale = frame
+            ? Math.min((this.cellW - 14) / frame.width, (this.cellH - 14) / frame.height)
+            : 0.11;
+
+          tile = keepField(this.add.image(x, y, tileVisual.texture));
+          tile.setScale(tileScale);
+          tile.setAlpha(isLogistics ? 0.9 : 0.94);
+
+          if (tileVisual.tint !== null) {
+            tile.setTint(tileVisual.tint);
+          }
         }
 
         const fill = isLogistics ? 0x073047 : 0x0b1220;
@@ -493,7 +1200,7 @@ class SceneDemo extends Phaser.Scene {
           this.cellW - 10,
           this.cellH - 10,
           fill,
-          isLogistics ? 0.82 : 0.72
+          isLogistics ? 0.1 : 0.08
         ));
 
         rect.setStrokeStyle(2, stroke, isLogistics ? 0.85 : 0.55);
@@ -515,6 +1222,7 @@ class SceneDemo extends Phaser.Scene {
           frontlineId: this.frontlineIndex,
           type: isLogistics ? "logistics" : "defense",
           occupied: false,
+          tile,
           rect,
           inner,
           logisticsMarkerCore,
@@ -638,9 +1346,9 @@ class SceneDemo extends Phaser.Scene {
           if (!slot.active) return;
 
           if (slot.placed && slot.shield) {
-            const config = this.shieldLevels[slot.shield.shieldLevel];
+            const config = this.getBuildingStats("shield", slot.shield.shieldLevel);
             line.setFillStyle(config.color, 0.78);
-            line.setStrokeStyle(2, slot.shield.shieldLevel === this.shieldMaxLevel ? 0xfef3c7 : 0xdbeafe, 0.95);
+            line.setStrokeStyle(2, 0xdbeafe, 0.95);
           } else {
             line.setFillStyle(0x60a5fa, 0.13);
             line.setStrokeStyle(1, 0x93c5fd, 0.25);
@@ -662,9 +1370,15 @@ class SceneDemo extends Phaser.Scene {
   }
 
   createCards() {
-    this.add.rectangle(this.W / 2, this.H - 60, this.W, 120, 0x020617, 0.94);
-    this.add.rectangle(this.W / 2, this.H - 120, this.W, 2, 0x334155, 0.85);
-    this.add.rectangle(this.W / 2, this.H - 118, this.W, 1, 0x93c5fd, 0.18);
+    // 底部保留为一条统一操作栏，卡牌仍使用原有独立 hitArea 和拖拽入口。
+    this.cardBarBg = this.add.rectangle(this.W / 2, this.H - 60, this.W, 120, 0x020617, 0.78);
+    this.cardBarBg.setDepth(88);
+    this.cardBarTop = this.add.rectangle(this.W / 2, this.H - 120, this.W, 2, 0x1d4f78, 0.72);
+    this.cardBarTop.setDepth(89);
+    this.cardBarGlow = this.add.rectangle(this.W / 2, this.H - 118, this.W, 1, 0x60d8ff, 0.24);
+    this.cardBarGlow.setDepth(89);
+    this.cardBarDivider = this.add.rectangle(714, this.H - 60, 1, 82, 0x35506d, 0.5);
+    this.cardBarDivider.setDepth(89);
 
     this.cardData = [
       {
@@ -709,41 +1423,51 @@ class SceneDemo extends Phaser.Scene {
       }
     ];
 
+    const cardPositions = [112, 272, 432, 592, 846];
+
     for (let i = 0; i < this.cardData.length; i++) {
       const data = this.cardData[i];
-      const x = 210 + i * 170;
-      const y = this.H - 60;
+      const x = cardPositions[i];
+      const y = this.H - 58;
 
-      this.add.rectangle(x + 4, y + 5, 150, 88, 0x000000, 0.35);
+      const shadow = this.add.rectangle(x + 4, y + 5, 150, 100, 0x000000, 0.30);
+      shadow.setDepth(89);
 
-      const bg = this.add.rectangle(x, y, 150, 88, 0x0b1220, 0.98);
-      bg.setStrokeStyle(2, 0x475569, 0.9);
+      const bg = this.add.rectangle(x, y, 150, 100, UI_THEME.card.fill, 0.94);
+      bg.setStrokeStyle(1, UI_THEME.card.border, 0.9);
       bg.setInteractive({ useHandCursor: true });
+      bg.setDepth(90);
 
-      this.add.rectangle(x, y - 34, 142, 2, 0x38bdf8, 0.18);
+      const accent = this.add.rectangle(x, y - 46, 138, 2, 0x38bdf8, 0.28);
+      accent.setDepth(91);
 
       let thumbnail = null;
       if (this.hasTexture(data.texture)) {
-        thumbnail = this.add.image(x + 45, y - 10, data.texture);
-        thumbnail.setScale(data.id === "meteor" ? 0.075 : 0.07);
-        thumbnail.setDepth(2);
+        thumbnail = this.add.image(x, y - 6, data.texture);
+        thumbnail.setScale(data.id === "meteor" ? UI_VISUAL_SCALE.meteorThumbnail : UI_VISUAL_SCALE.cardThumbnail);
+        thumbnail.setDepth(92);
       }
 
-      const title = this.makeText(x - 58, y - 37, data.name, {
-        fontSize: "15px",
+      const title = this.makeText(x, y - 48, data.name, {
+        fontSize: "16px",
         color: "#dbeafe",
         fontStyle: "bold"
       });
+      title.setOrigin(0.5, 0);
+      title.setDepth(92);
 
-      const cost = this.makeText(x - 58, y + 16, `费用：${data.cost}`, {
-        fontSize: "13px",
+      const cost = this.makeText(x, y + 31, `星能 ${data.cost}`, {
+        fontSize: "14px",
         color: "#facc15"
       });
+      cost.setOrigin(0.5, 0.5);
+      cost.setDepth(92);
 
       const desc = this.makeText(x - 58, y + 35, data.desc, {
         fontSize: "12px",
         color: "#7f98b2"
       });
+      desc.setVisible(false);
 
       const card = {
         data,
@@ -751,20 +1475,21 @@ class SceneDemo extends Phaser.Scene {
         title,
         cost,
         desc,
-        thumbnail
+        thumbnail,
+        accent
       };
 
       this.cards.push(card);
 
       bg.on("pointerover", () => {
         if (this.selectedCard?.id !== data.id) {
-          bg.setStrokeStyle(2, 0x93c5fd, 1);
+          bg.setStrokeStyle(2, UI_THEME.card.hoverBorder, 1);
         }
       });
 
       bg.on("pointerout", () => {
         if (this.selectedCard?.id !== data.id) {
-          bg.setStrokeStyle(2, 0x475569, 0.9);
+          bg.setStrokeStyle(1, UI_THEME.card.border, 0.9);
         }
       });
 
@@ -775,96 +1500,147 @@ class SceneDemo extends Phaser.Scene {
   }
 
   createUI() {
-    this.statusBarBg = this.add.rectangle(this.W / 2, 38, this.W, 76, 0x020617, 0.86);
-    this.statusBarBg.setDepth(90);
+    const hudX = 18;
+    const hudWidth = 210;
+    const hudRows = [34, 88, 142];
 
-    this.statusBarDivider = this.add.rectangle(this.W / 2, 76, this.W, 2, 0x334155, 0.9);
+    this.statusBarBg = this.add.rectangle(hudX + hudWidth / 2, 88, hudWidth + 4, 160, 0x020617, 0.28);
+    this.statusBarBg.setDepth(90);
+    this.statusBarDivider = this.add.rectangle(hudX + 4, 88, 2, 150, UI_THEME.hud.border, 0.78);
     this.statusBarDivider.setDepth(90);
+    this.hudPanels = hudRows.map((y) => {
+      const panel = this.add.rectangle(hudX + hudWidth / 2, y, hudWidth, 46, UI_THEME.hud.panelFill, UI_THEME.hud.panelAlpha);
+      panel.setStrokeStyle(1, UI_THEME.hud.border, 0.45);
+      panel.setDepth(90);
+      return panel;
+    });
 
     const statusIcons = [
-      ["icon_star_energy", 296, 24],
-      ["icon_planet_hp", 656, 24],
-      ["icon_wave", 846, 24]
+      ["icon_star_energy", 42, 34, UI_VISUAL_SCALE.hudIcon],
+      ["icon_wave", 42, 88, UI_VISUAL_SCALE.hudIcon],
+      ["icon_planet_hp", 150, 88, UI_VISUAL_SCALE.hudIcon * 0.72]
     ];
-    for (const [texture, x, y] of statusIcons) {
+    for (const [texture, x, y, scale] of statusIcons) {
       if (!this.hasTexture(texture)) continue;
-      const icon = this.add.image(x, y, texture).setScale(0.08);
+      const icon = this.add.image(x, y, texture).setScale(scale);
       icon.setDepth(91);
     }
 
-    this.energyText = this.makeText(320, 10, "", {
-      fontSize: "18px",
+    this.energyLabel = this.makeHudText(66, 25, "星能", {
+      fontSize: "13px",
+      color: UI_THEME.hud.label,
+      fontStyle: "bold"
+    });
+    this.energyLabel.setDepth(91);
+
+    this.waveLabel = this.makeHudText(66, 79, "波次", {
+      fontSize: "13px",
+      color: UI_THEME.hud.label,
+      fontStyle: "bold"
+    });
+    this.waveLabel.setDepth(91);
+
+    this.frontlineLabel = this.makeHudText(40, 133, "下一波", {
+      fontSize: "13px",
+      color: UI_THEME.hud.label,
+      fontStyle: "bold"
+    });
+    this.frontlineLabel.setDepth(91);
+
+    this.energyText = this.makeHudText(151, 22, "", {
+      fontSize: "20px",
       color: "#facc15",
       fontStyle: "bold"
     });
+    this.energyText.setOrigin(1, 0);
     this.energyText.setDepth(91);
 
-    this.hpText = this.makeText(680, 10, "", {
-      fontSize: "18px",
+    this.hpText = this.makeHudText(214, 79, "", {
+      fontSize: "11px",
       color: "#74f2a5",
       fontStyle: "bold"
     });
+    this.hpText.setOrigin(1, 0);
     this.hpText.setDepth(91);
 
-    this.waveText = this.makeText(870, 10, "", {
+    this.waveText = this.makeHudText(128, 76, "", {
       fontSize: "18px",
-      color: "#cbd5e1",
+      color: UI_THEME.hud.value,
       fontStyle: "bold"
     });
+    this.waveText.setOrigin(1, 0);
     this.waveText.setDepth(91);
 
-    this.frontlineText = this.makeText(320, 43, "", {
-      fontSize: "15px",
-      color: "#93c5fd",
+    this.versionText = this.makeText(this.W - 22, 11, GAME_VERSION, {
+      fontSize: "13px",
+      color: "#bfd1e4"
+    });
+    this.versionText.setOrigin(1, 0);
+    this.versionText.setAlpha(0.7);
+    this.versionText.setDepth(91);
+
+    this.frontlineText = this.makeHudText(214, 130, "", {
+      fontSize: "16px",
+      color: "#dcecff",
       fontStyle: "bold"
     });
+    this.frontlineText.setOrigin(1, 0);
     this.frontlineText.setDepth(91);
 
     this.createEnergyCapUpgradeButton();
-
-    this.messageBg = this.add.rectangle(0, 0, 480, 34, 0x020617, 0.9);
-    this.messageBg.setStrokeStyle(1, 0x475569, 0.85);
+    this.createSettingsButton();
 
     this.messageText = this.makeText(0, -1, "", {
-      fontSize: "15px",
-      color: "#e5e7eb",
-      fontStyle: "bold"
+      fontSize: "32px",
+      color: "#DCEBFF",
+      fontStyle: "bold",
+      align: "center",
+      wordWrap: { width: 620, useAdvancedWrap: true },
+      shadow: {
+        offsetX: 0,
+        offsetY: 2,
+        color: "#020617",
+        blur: 6,
+        fill: true
+      }
     });
     this.messageText.setOrigin(0.5, 0.5);
+    this.messageText.setAlpha(0.86);
 
-    this.messageContainer = this.add.container(1010, 59, [this.messageBg, this.messageText]);
+    this.messageContainer = this.add.container(this.W / 2, this.H * 0.44, [this.messageText]);
     this.messageContainer.setDepth(94);
     this.messageContainer.setVisible(false);
     this.messageContainer.setActive(false);
 
     this.createDemolishButton();
     this.updateUI();
-    this.showMessage("选择一张卡牌开始部署防线");
+    this.showMessage("选择卡牌");
   }
 
   createEnergyCapUpgradeButton() {
-    const x = 560;
-    const y = 27;
-    const bg = this.add.rectangle(x, y, 180, 40, 0x0c4a6e, 0.96);
-    bg.setStrokeStyle(2, 0x38bdf8, 0.95);
+    const x = 190;
+    const y = 34;
+    const bg = this.add.rectangle(x, y, 56, 34, 0x0b4168, 0.94);
+    bg.setStrokeStyle(1, 0x67d7ff, 0.92);
     bg.setInteractive({ useHandCursor: true });
     bg.setDepth(92);
 
     if (this.hasTexture("icon_energy_upgrade")) {
-      const icon = this.add.image(x - 72, y, "icon_energy_upgrade");
-      icon.setScale(0.055);
+      const icon = this.add.image(x - 17, y, "icon_energy_upgrade");
+      icon.setScale(UI_VISUAL_SCALE.energyUpgradeIcon);
       icon.setDepth(93);
+      this.energyCapUpgradeIcon = icon;
     }
 
-    const label = this.makeText(x, y - 1, "", {
-      fontSize: "14px",
+    const label = this.makeHudText(x + 12, y - 1, "", {
+      fontSize: "11px",
       color: "#e0f2fe",
       fontStyle: "bold"
     });
     label.setOrigin(0.5, 0.5);
     label.setDepth(93);
 
-    this.energyCapUpgradeButton = { bg, label };
+    this.energyCapUpgradeButton = { bg, label, icon: this.energyCapUpgradeIcon };
 
     bg.on("pointerover", () => {
       if (this.maxStarEnergy < ENERGY_CAP_MAX) {
@@ -884,14 +1660,35 @@ class SceneDemo extends Phaser.Scene {
     this.updateEnergyCapUpgradeButtonState();
   }
 
+  createSettingsButton() {
+    const x = this.W - 46;
+    const y = 65;
+    const bg = this.add.rectangle(x, y, 46, 46, UI_THEME.hud.panelFill, 0.78);
+    bg.setStrokeStyle(1, UI_THEME.hud.border, 0.62);
+    bg.setDepth(91);
+    bg.setInteractive({ useHandCursor: true });
+
+    const icon = this.makeText(x, y - 1, "⚙", {
+      fontSize: "27px",
+      color: "#dcecff",
+      fontStyle: "bold"
+    });
+    icon.setOrigin(0.5, 0.5);
+    icon.setDepth(92);
+
+    // 设置暂不引入新玩法；此处只拦截固定 UI 点击，避免误触战场。
+    bg.on("pointerdown", () => this.beginFixedUiInteraction());
+    this.settingsButton = { bg, icon };
+  }
+
   buyEnergyCapUpgrade() {
     if (this.gameState !== "playing") {
-      this.showMessage("本局已经结束，无法升级星能上限");
+      this.showMessage("本局已结束", "warning");
       return false;
     }
 
     if (this.maxStarEnergy >= ENERGY_CAP_MAX) {
-      this.showMessage("星能上限已满");
+      this.showMessage("星能已满", "warning");
       this.updateEnergyCapUpgradeButtonState();
       return false;
     }
@@ -908,7 +1705,7 @@ class SceneDemo extends Phaser.Scene {
     );
 
     this.updateUI();
-    this.showMessage(`星能上限 +${ENERGY_CAP_UPGRADE_AMOUNT}`);
+    this.showMessage(`星能上限 +${ENERGY_CAP_UPGRADE_AMOUNT}`, "reward");
     return true;
   }
 
@@ -920,41 +1717,56 @@ class SceneDemo extends Phaser.Scene {
 
     if (isFull) {
       bg.setFillStyle(0x111827, 0.72);
-      bg.setStrokeStyle(2, 0x475569, 0.65);
-      label.setText("上限已满");
+      bg.setStrokeStyle(1, 0x475569, 0.65);
+      label.setText("已满");
       label.setColor("#94a3b8");
+      this.energyCapUpgradeButton.icon?.setVisible(false);
       return;
     }
 
-    bg.setFillStyle(0x0c4a6e, 0.96);
-    bg.setStrokeStyle(2, 0x38bdf8, 0.95);
-    label.setText(`上限 +${ENERGY_CAP_UPGRADE_AMOUNT}  费用 ${ENERGY_CAP_UPGRADE_COST}`);
+    bg.setFillStyle(0x0b4168, 0.94);
+    bg.setStrokeStyle(1, 0x67d7ff, 0.92);
+    label.setText(`+${ENERGY_CAP_UPGRADE_AMOUNT}`);
     label.setColor("#e0f2fe");
+    this.energyCapUpgradeButton.icon?.setVisible(true);
   }
 
   createDemolishButton() {
-    const x = 1100;
-    const y = this.H - 60;
-    const bg = this.add.rectangle(x, y, 160, 88, 0x0b1220, 0.98);
-    bg.setStrokeStyle(2, 0x64748b, 0.95);
+    const x = 1034;
+    const y = this.H - 58;
+    const shadow = this.add.rectangle(x + 4, y + 5, 150, 100, 0x000000, 0.30);
+    shadow.setDepth(89);
+    const bg = this.add.rectangle(x, y, 150, 100, UI_THEME.card.fill, 0.94);
+    bg.setStrokeStyle(1, UI_THEME.card.border, 0.9);
     bg.setInteractive({ useHandCursor: true });
     bg.setDepth(90);
 
+    const accent = this.add.rectangle(x, y - 46, 138, 2, 0xfb7185, 0.28);
+    accent.setDepth(91);
+
+    let icon = null;
     if (this.hasTexture("icon_demolish")) {
-      const icon = this.add.image(x - 54, y, "icon_demolish");
-      icon.setScale(0.075);
-      icon.setDepth(91);
+      icon = this.add.image(x, y - 6, "icon_demolish");
+      icon.setScale(UI_VISUAL_SCALE.demolishIcon);
+      icon.setDepth(92);
     }
 
-    const label = this.makeText(x, y - 4, "拆除", {
-      fontSize: "20px",
+    const label = this.makeText(x, y - 48, "拆除", {
+      fontSize: "16px",
       color: "#e2e8f0",
       fontStyle: "bold"
     });
-    label.setOrigin(0.5, 0.5);
-    label.setDepth(91);
+    label.setOrigin(0.5, 0);
+    label.setDepth(92);
 
-    this.demolishButton = { bg, label };
+    const kind = this.makeText(x, y + 31, "功能", {
+      fontSize: "14px",
+      color: "#9fb8d1"
+    });
+    kind.setOrigin(0.5, 0.5);
+    kind.setDepth(92);
+
+    this.demolishButton = { bg, label, icon, kind, accent };
 
     bg.on("pointerover", () => {
       if (!this.demolishMode) {
@@ -978,8 +1790,19 @@ class SceneDemo extends Phaser.Scene {
     this.updateDemolishButtonState();
   }
 
-  updateStarEnergy() {
-    // 当前版本取消自然回能，保留接口方便之后切回其他经济规则。
+  updateStarEnergy(dt) {
+    if (this.gameState !== "playing") return;
+
+    if (this.starEnergy >= this.maxStarEnergy) {
+      this.energyRegenTimer = 0;
+      return;
+    }
+
+    this.energyRegenTimer += dt;
+    while (this.energyRegenTimer >= this.energyRegenInterval && this.starEnergy < this.maxStarEnergy) {
+      this.energyRegenTimer -= this.energyRegenInterval;
+      this.addStarEnergy(this.energyRegen);
+    }
   }
 
   getLogisticsColumn() {
@@ -1013,8 +1836,19 @@ class SceneDemo extends Phaser.Scene {
         const isLogistics = cell.col === logisticsColumn;
 
         cell.type = isLogistics ? "logistics" : "defense";
-        cell.rect.setFillStyle(isLogistics ? 0x073047 : 0x0b1220, isLogistics ? 0.82 : 0.72);
+        cell.rect.setFillStyle(isLogistics ? 0x073047 : 0x0b1220, isLogistics ? 0.1 : 0.08);
         cell.inner.setStrokeStyle(1, isLogistics ? 0x67e8f9 : 0x94a3b8, isLogistics ? 0.22 : 0.12);
+
+        if (cell.tile) {
+          cell.tile.setAlpha(isLogistics ? 0.9 : 0.94);
+
+          if (isLogistics) {
+            cell.tile.setTint(GRID_VISUALS.resource.tint);
+          } else {
+            cell.tile.clearTint();
+          }
+        }
+
         cell.logisticsMarkerCore.setVisible(isLogistics);
         cell.logisticsMarkerGlow.setVisible(isLogistics);
         this.resetCellStroke(cell);
@@ -1041,17 +1875,13 @@ class SceneDemo extends Phaser.Scene {
   }
 
   updateCollectors(dt) {
-    for (const producer of this.storedCollectors) {
-      producer.timer += dt;
-
-      while (producer.timer >= producer.interval) {
-        producer.timer -= producer.interval;
-        this.addStarEnergy(producer.amount);
-      }
-    }
+    if (this.gameState !== "playing") return;
 
     for (const building of this.buildings) {
-      if (building.id !== "collector" || building.destroyed) continue;
+      if (
+        building.id !== "collector" ||
+        building.destroyed
+      ) continue;
 
       building.collectTimer += dt;
 
@@ -1065,78 +1895,188 @@ class SceneDemo extends Phaser.Scene {
         building.collectTimer = 0;
 
         this.addStarEnergy(building.collectAmount);
-        this.floatText(
-          building.cell.x,
-          building.cell.y - 42,
-          `+${building.collectAmount}`,
-          this.collectorLevels[building.collectLevel].textColor
-        );
+        if (building.wing === this.activeWing) {
+          this.floatText(
+            building.cell.x,
+            building.cell.y - 42,
+            `+${building.collectAmount}`,
+            building.collectTextColor
+          );
 
-        this.tweens.add({
-          targets: building.core ? [building.glow, building.core] : building.buildingGlow,
-          scale: 1.18,
-          alpha: 0.22,
-          duration: 130,
-          yoyo: true
-        });
+          this.tweens.add({
+            targets: building.core ? [building.glow, building.core] : building.buildingGlow,
+            scale: 1.18,
+            alpha: 0.22,
+            duration: 130,
+            yoyo: true
+          });
+        }
       }
     }
   }
 
+  getBuildingStats(type, level) {
+    const normalizedLevel = Math.max(1, Math.floor(level));
+    const config = this.buildingProgressionConfig[type];
+    if (!config) return null;
+
+    if (type === "collector") {
+      return {
+        amount: config.amount,
+        interval: Math.max(
+          config.intervalFloor,
+          config.intervalFloor + (config.intervalBase - config.intervalFloor) * Math.pow(config.intervalDecay, normalizedLevel - 1)
+        ),
+        color: config.color,
+        textColor: config.textColor
+      };
+    }
+
+    if (type === "turret" || type === "laser") {
+      const base = config.baseStats[Math.min(normalizedLevel, 3)];
+      if (normalizedLevel <= 3) return { ...base };
+
+      const levelOffset = normalizedLevel - 3;
+      return {
+        damage: type === "turret" ? 8 + levelOffset * 2 : 17 + levelOffset * 4,
+        cooldown: Math.max(
+          config.cooldownFloor,
+          type === "turret" ? 0.72 - levelOffset * 0.01 : 1.15 - levelOffset * 0.015
+        ),
+        range: base.range,
+        color: base.color,
+        textColor: base.textColor
+      };
+    }
+
+    const base = config.baseStats[Math.min(normalizedLevel, 3)];
+    return normalizedLevel <= 3
+      ? { ...base }
+      : { ...base, maxHp: 50 + (normalizedLevel - 3) * 20 };
+  }
+
+  getBuildingUpgradeCost(type, currentLevel) {
+    const level = Math.max(1, Math.floor(currentLevel));
+
+    if (type === "collector") {
+      const config = this.buildingProgressionConfig.collector;
+      return Math.min(config.costCap, config.costBase + (level - 1) * config.costStep);
+    }
+
+    if (type === "turret") {
+      if (level === 1) return 4;
+      if (level === 2) return 6;
+      return Math.min(this.buildingProgressionConfig.turret.costCap, 10 + (level - 3) * 4);
+    }
+
+    if (type === "laser") {
+      if (level === 1) return 7;
+      if (level === 2) return 10;
+      return Math.min(this.buildingProgressionConfig.laser.costCap, 14 + (level - 3) * 5);
+    }
+
+    if (type === "shield") {
+      if (level === 1) return 5;
+      if (level === 2) return 7;
+      return Math.min(this.buildingProgressionConfig.shield.costCap, 12 + (level - 3) * 4);
+    }
+
+    return null;
+  }
+
+  formatBuildingInterval(interval) {
+    return (Math.round((interval + Number.EPSILON) * 10) / 10).toFixed(1);
+  }
+
   getCollectorTimerText(building, remainSeconds = building.collectInterval) {
-    return `Lv.${building.collectLevel} +${building.collectAmount} / ${Math.ceil(remainSeconds)}s`;
+    return `Lv.${building.collectLevel} 间隔 ${this.formatBuildingInterval(building.collectInterval)}s · ${Math.ceil(remainSeconds)}s`;
   }
 
   getCollectorUpgradeCost(level) {
-    return this.collectorUpgradeCosts[level] ?? null;
+    return this.getBuildingUpgradeCost("collector", level);
+  }
+
+  applyBuildingLevelStats(building, level, options = {}) {
+    const stats = this.getBuildingStats(building.id || "shield", level);
+    if (!stats) return null;
+
+    if (building.id === "collector") {
+      building.collectLevel = level;
+      building.collectAmount = stats.amount;
+      building.collectInterval = stats.interval;
+      building.collectTextColor = stats.textColor;
+      if (options.resetTimer) building.collectTimer = 0;
+
+      building.glow.setFillStyle(stats.color, 0.14);
+      if (!building.usesTexture) {
+        building.body.setFillStyle(stats.color, 0.95);
+        building.body.setStrokeStyle(3, 0x020617, 1);
+        building.core.setFillStyle(0xffffff, 0.7);
+      }
+      building.text.setText(`采集 Lv.${level}`);
+      if (building.timerText) {
+        building.timerText.setColor(stats.textColor);
+        building.timerText.setText(this.getCollectorTimerText(building));
+      }
+      return stats;
+    }
+
+    if (building.id === "turret" || building.id === "laser") {
+      building.defenseLevel = level;
+      building.attackDamage = stats.damage;
+      building.attackCooldown = stats.cooldown;
+      building.attackRange = stats.range;
+      if (options.resetAttackTimer) building.attackTimer = stats.cooldown;
+
+      building.glow.setFillStyle(stats.color, 0.14);
+      this.applyWingFacing(building.body, building.frontlineId, "building");
+      if (!building.usesTexture) {
+        building.body.setFillStyle(stats.color, 0.95);
+        building.body.setStrokeStyle(3, 0x020617, 1);
+        building.core.setFillStyle(0xffffff, 0.72);
+      }
+      building.text.setText(`${this.getDefenseBuildingLabel(building.id)} Lv.${level}`);
+      building.text.setColor(stats.textColor);
+      return stats;
+    }
+
+    const previousMaxHp = building.maxHp || 0;
+    building.shieldLevel = level;
+    building.maxHp = stats.maxHp;
+    building.currentHp = options.refillHp
+      ? stats.maxHp
+      : Math.min(stats.maxHp, Math.max(0, building.currentHp + (stats.maxHp - previousMaxHp)));
+    building.slot.line.setFillStyle(stats.color, 0.78);
+    building.slot.line.setStrokeStyle(2, 0xdbeafe, 0.95);
+    if (!building.usesTexture) {
+      building.shieldCore.setFillStyle(stats.color, 0.38);
+      building.shieldCore.setStrokeStyle(2, 0xdbeafe, 0.85);
+    }
+    building.text.setText(`护盾 Lv.${level}`);
+    building.text.setColor(stats.textColor);
+    this.updateShieldHealthBar(building);
+    return stats;
   }
 
   applyCollectorLevel(building, level, resetTimer = true) {
-    const config = this.collectorLevels[level];
-    if (!config) return;
-
-    building.collectLevel = level;
-    building.collectAmount = config.amount;
-    building.collectInterval = config.interval;
-
-    if (resetTimer) {
-      building.collectTimer = 0;
-    }
-
-    building.glow.setFillStyle(config.color, 0.14);
-    if (!building.usesTexture) {
-      building.body.setFillStyle(config.color, 0.95);
-      building.body.setStrokeStyle(3, level === this.collectorMaxLevel ? 0xfef3c7 : 0x020617, 1);
-      building.core.setFillStyle(0xffffff, level === this.collectorMaxLevel ? 0.9 : 0.7);
-    }
-    building.text.setText(`采集 Lv.${level}`);
-
-    if (building.timerText) {
-      building.timerText.setColor(config.textColor);
-      building.timerText.setText(this.getCollectorTimerText(building));
-    }
+    return this.applyBuildingLevelStats(building, level, { resetTimer });
   }
 
   canUpgradeCollector(building, showMsg = true) {
     if (!building || building.destroyed || building.id !== "collector") {
-      if (showMsg) this.showMessage("这里只能升级已有星尘采集器");
-      return false;
-    }
-
-    if (building.collectLevel >= this.collectorMaxLevel) {
-      if (showMsg) this.showMessage("已达到最高等级");
+      if (showMsg) this.showMessage("无法升级", "warning");
       return false;
     }
 
     const cost = this.getCollectorUpgradeCost(building.collectLevel);
 
     if (cost === null) {
-      if (showMsg) this.showMessage("已达到最高等级");
+      if (showMsg) this.showMessage("无法升级", "warning");
       return false;
     }
 
     if (this.starEnergy < cost) {
-      if (showMsg) this.showMessage(`星能不足：升级需要 ${cost}`);
+      if (showMsg) this.showMessage("星能不足", "warning");
       return false;
     }
 
@@ -1150,12 +2090,13 @@ class SceneDemo extends Phaser.Scene {
 
     const nextLevel = building.collectLevel + 1;
     const cost = this.getCollectorUpgradeCost(building.collectLevel);
+    const nextStats = this.getBuildingStats("collector", nextLevel);
 
     this.starEnergy -= cost;
     this.applyCollectorLevel(building, nextLevel, true);
 
-    this.floatText(cell.x, cell.y - 18, `Lv.${nextLevel}`, this.collectorLevels[nextLevel].textColor);
-    this.showMessage(`星尘采集器升级到 Lv.${nextLevel}`);
+    this.floatText(cell.x, cell.y - 18, `Lv.${nextLevel}`, nextStats.textColor);
+    this.showMessage(`星尘采集器 Lv${nextLevel}`, "reward");
     this.updateUI();
   }
 
@@ -1164,7 +2105,7 @@ class SceneDemo extends Phaser.Scene {
   }
 
   getDefenseUpgradeCost(building) {
-    return this.defenseUpgradeCosts[building.id]?.[building.defenseLevel] ?? null;
+    return this.getBuildingUpgradeCost(building.id, building.defenseLevel);
   }
 
   getDefenseBuildingLabel(id) {
@@ -1174,48 +2115,24 @@ class SceneDemo extends Phaser.Scene {
   }
 
   applyDefenseBuildingLevel(building, level, resetAttackTimer = true) {
-    const config = this.defenseLevels[building.id]?.[level];
-    if (!config) return;
-
-    building.defenseLevel = level;
-    building.attackDamage = config.damage;
-    building.attackCooldown = config.cooldown;
-    building.attackRange = config.range;
-
-    if (resetAttackTimer) {
-      building.attackTimer = building.attackCooldown;
-    }
-
-    building.glow.setFillStyle(config.color, 0.14);
-    if (!building.usesTexture) {
-      building.body.setFillStyle(config.color, 0.95);
-      building.body.setStrokeStyle(3, level === this.defenseMaxLevel ? 0xfef3c7 : 0x020617, 1);
-      building.core.setFillStyle(0xffffff, level === this.defenseMaxLevel ? 0.92 : 0.72);
-    }
-    building.text.setText(`${this.getDefenseBuildingLabel(building.id)} Lv.${level}`);
-    building.text.setColor(config.textColor);
+    return this.applyBuildingLevelStats(building, level, { resetAttackTimer });
   }
 
   canUpgradeDefenseBuilding(building, card, showMsg = true) {
     if (!building || building.destroyed || !this.isDefenseBuildingId(building.id) || building.id !== card.id) {
-      if (showMsg) this.showMessage("这里只能升级同类型防御建筑");
-      return false;
-    }
-
-    if (building.defenseLevel >= this.defenseMaxLevel) {
-      if (showMsg) this.showMessage("已达到最高等级");
+      if (showMsg) this.showMessage("类型不符", "warning");
       return false;
     }
 
     const cost = this.getDefenseUpgradeCost(building);
 
     if (cost === null) {
-      if (showMsg) this.showMessage("已达到最高等级");
+      if (showMsg) this.showMessage("无法升级", "warning");
       return false;
     }
 
     if (this.starEnergy < cost) {
-      if (showMsg) this.showMessage(`星能不足：升级需要 ${cost}`);
+      if (showMsg) this.showMessage("星能不足", "warning");
       return false;
     }
 
@@ -1229,74 +2146,50 @@ class SceneDemo extends Phaser.Scene {
 
     const nextLevel = building.defenseLevel + 1;
     const cost = this.getDefenseUpgradeCost(building);
-    const config = this.defenseLevels[building.id][nextLevel];
+    const nextStats = this.getBuildingStats(building.id, nextLevel);
 
     this.starEnergy -= cost;
     this.applyDefenseBuildingLevel(building, nextLevel, true);
 
-    this.floatText(cell.x, cell.y - 18, `Lv.${nextLevel}`, config.textColor);
-    this.showMessage(`${this.getDefenseBuildingLabel(building.id)}升级到 Lv.${nextLevel}`);
+    this.floatText(cell.x, cell.y - 18, `Lv.${nextLevel}`, nextStats.textColor);
+    const buildingName = building.id === "turret" ? "星轨炮台" : "光棱卫星";
+    this.showMessage(`${buildingName} Lv${nextLevel}`, "reward");
     this.updateUI();
   }
 
   getShieldUpgradeCost(level) {
-    return this.shieldUpgradeCosts[level] ?? null;
+    return this.getBuildingUpgradeCost("shield", level);
   }
 
   updateShieldHealthBar(shield) {
     if (!shield || shield.destroyed) return;
 
     const ratio = Phaser.Math.Clamp(shield.currentHp / shield.maxHp, 0, 1);
-    const color = ratio > 0.5 ? this.shieldLevels[shield.shieldLevel].color : ratio > 0.25 ? 0xfacc15 : 0xfb7185;
+    const color = ratio > 0.5 ? this.getBuildingStats("shield", shield.shieldLevel).color : ratio > 0.25 ? 0xfacc15 : 0xfb7185;
 
     shield.healthBarFill.setScale(ratio, 1);
     shield.healthBarFill.setFillStyle(color, 0.95);
   }
 
   applyShieldLevel(shield, level, refillHp = true) {
-    const config = this.shieldLevels[level];
-    if (!config) return;
-
-    shield.shieldLevel = level;
-    const durability = this.durabilityConfig.shield[level];
-
-    shield.maxHp = durability.maxHp;
-    shield.currentHp = refillHp
-      ? durability.maxHp
-      : Math.min(shield.currentHp || durability.maxHp, durability.maxHp);
-
-    shield.slot.line.setFillStyle(config.color, 0.78);
-    shield.slot.line.setStrokeStyle(2, level === this.shieldMaxLevel ? 0xfef3c7 : 0xdbeafe, 0.95);
-    if (!shield.usesTexture) {
-      shield.shieldCore.setFillStyle(config.color, 0.38);
-      shield.shieldCore.setStrokeStyle(2, level === this.shieldMaxLevel ? 0xfef3c7 : 0xdbeafe, 0.85);
-    }
-    shield.text.setText(`护盾 Lv.${level}`);
-    shield.text.setColor(config.textColor);
-
-    this.updateShieldHealthBar(shield);
+    return this.applyBuildingLevelStats(shield, level, { refillHp });
   }
 
   canUpgradeShield(shield, showMsg = true) {
     if (!shield || shield.destroyed) {
-      if (showMsg) this.showMessage("这里没有可升级的引力护盾");
-      return false;
-    }
-
-    if (shield.shieldLevel >= this.shieldMaxLevel) {
-      if (showMsg) this.showMessage("引力护盾已达到最高等级");
+      if (showMsg) this.showMessage("无法升级", "warning");
       return false;
     }
 
     const cost = this.getShieldUpgradeCost(shield.shieldLevel);
 
     if (cost === null) {
-      if (showMsg) this.showMessage("引力护盾已达到最高等级");
+      if (showMsg) this.showMessage("无法升级", "warning");
       return false;
     }
 
     if (this.starEnergy < cost) {
-      if (showMsg) this.showMessage(`星能不足：升级需要 ${cost}`);
+      if (showMsg) this.showMessage("星能不足", "warning");
       return false;
     }
 
@@ -1310,13 +2203,13 @@ class SceneDemo extends Phaser.Scene {
 
     const nextLevel = shield.shieldLevel + 1;
     const cost = this.getShieldUpgradeCost(shield.shieldLevel);
-    const config = this.shieldLevels[nextLevel];
+    const nextStats = this.getBuildingStats("shield", nextLevel);
 
     this.starEnergy -= cost;
-    this.applyShieldLevel(shield, nextLevel, true);
+    this.applyShieldLevel(shield, nextLevel, false);
 
-    this.floatText(slot.x, slot.y - 18, `Lv.${nextLevel}`, config.textColor);
-    this.showMessage(`引力护盾升级到 Lv.${nextLevel}`);
+    this.floatText(slot.x, slot.y - 18, `Lv.${nextLevel}`, nextStats.textColor);
+    this.showMessage(`引力护盾 Lv${nextLevel}`, "reward");
     this.updateUI();
   }
 
@@ -1374,6 +2267,12 @@ class SceneDemo extends Phaser.Scene {
   }
 
   updateMeteorPreview(pointer) {
+    if (this.gameState !== "playing") {
+      this.meteorPreviewOuter?.setVisible(false);
+      this.meteorPreviewInner?.setVisible(false);
+      return;
+    }
+
     const shouldShow =
       !this.frontlineTransitioning &&
       !this.demolishMode &&
@@ -1398,8 +2297,9 @@ class SceneDemo extends Phaser.Scene {
     this.selectedCard = null;
 
     for (const card of this.cards) {
-      card.bg.setStrokeStyle(2, 0x475569, 0.9);
-      card.bg.setFillStyle(0x0b1220, 0.98);
+      card.bg.setStrokeStyle(1, UI_THEME.card.border, 0.9);
+      card.bg.setFillStyle(UI_THEME.card.fill, 0.94);
+      card.accent?.setFillStyle(0x38bdf8, 0.28);
     }
   }
 
@@ -1409,12 +2309,12 @@ class SceneDemo extends Phaser.Scene {
 
   setDemolishMode(enabled, showFeedback = true) {
     if (enabled && this.gameState !== "playing") {
-      if (showFeedback) this.showMessage("本局已经结束，无法进入拆除模式");
+      if (showFeedback) this.showMessage("本局已结束", "warning");
       return;
     }
 
     if (enabled && this.frontlineTransitioning) {
-      if (showFeedback) this.showMessage("视角转移中，请等待新战区就位");
+      if (showFeedback) this.showMessage("战区转移中", "warning");
       return;
     }
 
@@ -1444,16 +2344,22 @@ class SceneDemo extends Phaser.Scene {
       bg.setStrokeStyle(3, 0xfb7185, 1);
       label.setText("拆除中");
       label.setColor("#fecdd3");
+      this.demolishButton.kind?.setText("点击目标");
+      this.demolishButton.accent?.setFillStyle(0xfb7185, 0.8);
       return;
     }
 
-    bg.setFillStyle(0x0b1220, 0.98);
-    bg.setStrokeStyle(2, 0x64748b, 0.95);
+    bg.setFillStyle(UI_THEME.card.fill, 0.94);
+    bg.setStrokeStyle(1, UI_THEME.card.border, 0.9);
     label.setText("拆除");
     label.setColor("#e2e8f0");
+    this.demolishButton.kind?.setText("功能");
+    this.demolishButton.accent?.setFillStyle(0xfb7185, 0.28);
   }
 
   beginCardDragCandidate(card, pointer) {
+    if (this.gameState !== "playing") return;
+
     this.beginFixedUiInteraction();
     this.cardDragState = {
       active: false,
@@ -1472,6 +2378,9 @@ class SceneDemo extends Phaser.Scene {
     const ghost = this.hasTexture(texture)
       ? this.add.image(0, 0, texture).setScale(card.id === "meteor" ? 0.09 : 0.10)
       : this.add.circle(0, 0, 24, 0x93c5fd, 0.5);
+    if (this.isDirectionalBuildingVisual(card.id)) {
+      this.applyWingFacing(ghost, this.frontlineIndex, "building");
+    }
     ghost.setAlpha(0.5);
     ghost.setDepth(88);
     const outline = this.add.rectangle(0, 0, this.cellW - 8, this.cellH - 8, 0x22c55e, 0);
@@ -1496,6 +2405,8 @@ class SceneDemo extends Phaser.Scene {
   }
 
   updateCardDragGhost(pointer) {
+    if (this.gameState !== "playing") return;
+
     const state = this.cardDragState;
     if (!state?.candidateCard || !pointer?.isDown) return;
     const distance = Phaser.Math.Distance.Between(state.startX, state.startY, pointer.x, pointer.y);
@@ -1544,6 +2455,11 @@ class SceneDemo extends Phaser.Scene {
   }
 
   finishCardDrag(pointer) {
+    if (this.gameState !== "playing") {
+      this.cancelCardDrag();
+      return false;
+    }
+
     const state = this.cardDragState;
     if (!state?.candidateCard) return false;
     const wasDrag = state.active;
@@ -1557,7 +2473,7 @@ class SceneDemo extends Phaser.Scene {
       return true;
     }
     if (!valid) {
-      this.showMessage("此处无法部署或星能不足");
+      this.showMessage("无法部署", "warning");
       return true;
     }
     this.selectedCard = card;
@@ -1584,6 +2500,8 @@ class SceneDemo extends Phaser.Scene {
   }
 
   beginPointerInteraction(pointer) {
+    if (this.gameState !== "playing") return;
+
     if (!pointer || this.pointerPressStart) return;
 
     this.pointerPressStart = { x: pointer.x, y: pointer.y };
@@ -1596,6 +2514,8 @@ class SceneDemo extends Phaser.Scene {
   }
 
   trackPointerMovement(pointer) {
+    if (this.gameState !== "playing") return;
+
     if (!this.pointerPressStart || !pointer?.isDown) return;
 
     const distance = Phaser.Math.Distance.Between(
@@ -1623,6 +2543,7 @@ class SceneDemo extends Phaser.Scene {
 
   queuePlacementTarget(type, target) {
     if (
+      this.gameState !== "playing" ||
       this.demolishMode ||
       this.pointerDragging ||
       this.frontlineTransitioning ||
@@ -1636,7 +2557,7 @@ class SceneDemo extends Phaser.Scene {
   }
 
   queueDemolishTarget(target) {
-    if (!this.demolishMode || this.pointerDragging || this.frontlineTransitioning) return;
+    if (this.gameState !== "playing" || !this.demolishMode || this.pointerDragging || this.frontlineTransitioning) return;
 
     if (!target || target.destroyed || target.frontlineId !== this.frontlineIndex) {
       this.pendingDemolishTarget = null;
@@ -1647,6 +2568,16 @@ class SceneDemo extends Phaser.Scene {
   }
 
   finishPointerInteraction(pointer) {
+    if (this.gameState !== "playing") {
+      this.cancelPendingMapAction();
+      this.cancelCardDrag();
+      this.pointerPressStart = null;
+      this.pointerDragging = false;
+      this.fixedUiPointerActive = false;
+      this.pointerIsTouch = false;
+      return;
+    }
+
     if (this.cardDragState?.candidateCard) {
       this.finishCardDrag(pointer);
       this.fixedUiPointerActive = false;
@@ -1705,7 +2636,7 @@ class SceneDemo extends Phaser.Scene {
 
   selectCard(cardData) {
     if (this.gameState !== "playing") {
-      this.showMessage("本局已经结束，刷新页面可重新开始");
+      this.showMessage("本局已结束", "warning");
       return;
     }
 
@@ -1714,25 +2645,20 @@ class SceneDemo extends Phaser.Scene {
 
     for (const card of this.cards) {
       if (card.data.id === cardData.id) {
-        card.bg.setStrokeStyle(3, 0xfacc15, 1);
-        card.bg.setFillStyle(0x182033, 1);
+        card.bg.setStrokeStyle(2, UI_THEME.card.selectedBorder, 1);
+        card.bg.setFillStyle(UI_THEME.card.selectedFill, 1);
+        card.accent?.setFillStyle(0x7fe7ff, 0.95);
+        card.title.setAlpha(1);
+        card.cost.setAlpha(1);
+        card.thumbnail?.setAlpha(1);
       } else {
-        card.bg.setStrokeStyle(2, 0x475569, 0.9);
-        card.bg.setFillStyle(0x0b1220, 0.98);
+        card.bg.setStrokeStyle(1, UI_THEME.card.border, 0.9);
+        card.bg.setFillStyle(UI_THEME.card.fill, 0.94);
+        card.accent?.setFillStyle(0x38bdf8, 0.28);
       }
     }
 
-    if (cardData.id === "collector") {
-      this.showMessage("已选择：星尘采集器，点击已有采集器可升级");
-    } else if (this.isDefenseBuildingId(cardData.id)) {
-      this.showMessage(`已选择：${cardData.name}，点击同类建筑可升级`);
-    } else if (cardData.id === "shield") {
-      this.showMessage("已选择：引力护盾，点击已有护盾可升级");
-    } else if (cardData.id === "meteor") {
-      this.showMessage("已选择：陨星打击，点击任意位置释放");
-    } else {
-      this.showMessage(`已选择：${cardData.name}`);
-    }
+    this.showMessage(`已选：${cardData.name}`);
 
     this.updateMeteorPreview(this.input.activePointer);
   }
@@ -1795,17 +2721,17 @@ class SceneDemo extends Phaser.Scene {
     }
 
     if (cell.occupied) {
-      if (showMsg) this.showMessage("这里已经有建筑了");
+      if (showMsg) this.showMessage("格子已占用", "warning");
       return false;
     }
 
     if (card.id === "collector" && cell.type !== "logistics") {
-      if (showMsg) this.showMessage("星尘采集器只能部署在资源区");
+      if (showMsg) this.showMessage("区域不适用", "warning");
       return false;
     }
 
     if ((card.id === "turret" || card.id === "laser") && cell.type === "logistics") {
-      if (showMsg) this.showMessage("资源区不适合部署攻击建筑");
+      if (showMsg) this.showMessage("区域不适用", "warning");
       return false;
     }
 
@@ -1816,17 +2742,17 @@ class SceneDemo extends Phaser.Scene {
     if (this.gameState !== "playing") return;
 
     if (this.frontlineTransitioning) {
-      this.showMessage("视角转移中，请等待新战区就位");
+      this.showMessage("战区转移中", "warning");
       return;
     }
 
     if (!this.selectedCard) {
-      this.showMessage("请先选择一张卡牌");
+      this.showMessage("请选择卡牌", "warning");
       return;
     }
 
     if (this.selectedCard.id === "shield") {
-      this.showMessage("引力护盾要部署在两列之间的蓝色细线上");
+      this.showMessage("请放置在护盾位", "warning");
       return;
     }
 
@@ -1840,7 +2766,7 @@ class SceneDemo extends Phaser.Scene {
       } else if (this.isDefenseBuildingId(this.selectedCard.id)) {
         this.tryUpgradeDefenseBuilding(cell);
       } else {
-        this.showMessage("这里已经有建筑了");
+        this.showMessage("格子已占用", "warning");
       }
 
       return;
@@ -1884,6 +2810,12 @@ class SceneDemo extends Phaser.Scene {
       ? this.addToFrontline(this.add.image(cell.x, cell.y, visualConfig.texture).setScale(visualConfig.scale))
       : this.addToFrontline(this.add.rectangle(cell.x, cell.y, 44, 44, color, 0.95));
     if (!usesTexture) body.setStrokeStyle(3, 0x020617, 1);
+    const facingDirection = this.isDirectionalBuildingVisual(card.id)
+      ? this.getWingFacingDirection(cell.frontlineId, "building")
+      : 0;
+    if (facingDirection) {
+      this.applyWingFacing(body, cell.frontlineId, "building");
+    }
 
     const core = usesTexture ? null : this.addToFrontline(this.add.circle(cell.x, cell.y, 8, 0xffffff, 0.7));
 
@@ -1932,6 +2864,8 @@ class SceneDemo extends Phaser.Scene {
     const building = {
       id: card.id,
       targetType: "building",
+      wing: this.activeWing,
+      gridKey: this.getGridCellKey(cell),
       frontlineId: cell.frontlineId,
       region: cell.type,
       cell,
@@ -1959,7 +2893,8 @@ class SceneDemo extends Phaser.Scene {
       attackCooldown,
       attackRange,
       attackTimer: 0,
-      defenseLevel: 0
+      defenseLevel: 0,
+      facingDirection
     };
 
     if (card.id === "collector") {
@@ -1974,6 +2909,7 @@ class SceneDemo extends Phaser.Scene {
 
     cell.building = building;
     this.buildings.push(building);
+    this.registerBuildingInWing(building);
 
     this.tweens.add({
       targets: core ? [buildingGlow, core] : buildingGlow,
@@ -1991,22 +2927,22 @@ class SceneDemo extends Phaser.Scene {
     if (this.gameState !== "playing") return;
 
     if (this.frontlineTransitioning) {
-      this.showMessage("视角转移中，请等待新战区就位");
+      this.showMessage("战区转移中", "warning");
       return;
     }
 
     if (!this.selectedCard) {
-      this.showMessage("请先选择引力护盾卡牌");
+      this.showMessage("请选择护盾", "warning");
       return;
     }
 
     if (this.selectedCard.id !== "shield") {
-      this.showMessage("这里只能部署引力护盾");
+      this.showMessage("请选择护盾", "warning");
       return;
     }
 
     if (!slot.active) {
-      this.showMessage("核心近轨区禁止部署引力护盾");
+      this.showMessage("区域不适用", "warning");
       return;
     }
 
@@ -2070,6 +3006,8 @@ class SceneDemo extends Phaser.Scene {
 
     const shield = {
       targetType: "shield",
+      wing: this.activeWing,
+      slotKey: this.getShieldSlotKey(slot),
       frontlineId: slot.frontlineId,
       region: "shield",
       slot,
@@ -2089,8 +3027,9 @@ class SceneDemo extends Phaser.Scene {
 
     slot.shield = shield;
     this.shields.push(shield);
+    this.registerShieldInWing(shield);
 
-    this.showMessage("引力护盾已展开");
+    this.showMessage("护盾已展开");
     this.updateUI();
   }
 
@@ -2164,11 +3103,14 @@ class SceneDemo extends Phaser.Scene {
       }
     }
 
-    this.showMessage(hitCount > 0 ? `陨星打击命中 ${hitCount} 个敌人` : "陨星打击已释放");
+    this.showMessage(hitCount > 0 ? `陨星命中 ${hitCount}` : "陨星已释放");
     this.updateUI();
   }
 
   updateWaves(dt) {
+    if (this.gameState !== "playing") return;
+    if (this.waveCompletionPending) return;
+
     const wave = this.getWaveConfig(this.currentWaveIndex);
 
     if (!this.waveActive && this.waveSpawned === 0) {
@@ -2186,7 +3128,8 @@ class SceneDemo extends Phaser.Scene {
       this.waveSpawnTimer -= dt;
 
       while (this.waveSpawnTimer <= 0 && this.waveSpawned < wave.count) {
-        this.spawnEnemy(wave);
+        const enemyType = this.waveQueue[this.waveSpawned] || "basic";
+        this.spawnEnemy(wave, enemyType);
         this.waveSpawned++;
         this.waveSpawnTimer += wave.interval;
       }
@@ -2198,37 +3141,42 @@ class SceneDemo extends Phaser.Scene {
 
     if (!this.waveActive && this.waveSpawned >= wave.count && this.enemies.length === 0) {
       const completedWave = this.currentWaveIndex + 1;
+      this.runStats.completedWaves = Math.max(this.runStats.completedWaves, completedWave);
 
       this.currentWaveIndex++;
       this.waveSpawned = 0;
-      this.waveStartTimer = this.waveRestTime;
-
-      if (completedWave % this.wavesPerFrontline === 0) {
-        this.switchFrontline(completedWave);
-      } else {
-        this.showMessage(`第 ${this.currentWaveIndex} 波已清除，准备第 ${this.currentWaveIndex + 1} 波`);
-      }
+      this.waveQueue = [];
+      this.processCompletedWave(completedWave);
     }
 
     this.updateUI();
   }
 
   startWave() {
+    if (this.gameState !== "playing") return;
+
     this.waveActive = true;
     this.waveSpawnTimer = 0;
+    const wave = this.getWaveConfig(this.currentWaveIndex);
+    this.waveQueue = this.buildWaveQueue(this.currentWaveIndex, wave.count);
+    this.runStats.highestWaveReached = Math.max(
+      this.runStats.highestWaveReached,
+      this.currentWaveIndex + 1
+    );
 
-    this.showMessage(`${this.getFrontlineLabel()}第 ${this.currentWaveIndex + 1} 波虚空敌人来袭`);
+    this.showMessage(`第 ${this.currentWaveIndex + 1} 波来袭`);
     this.updateUI();
   }
 
   getWaveConfig(waveIndex) {
     const template = this.waveTemplates[waveIndex % this.waveTemplates.length];
+    const waveNumber = waveIndex + 1;
     const decade = Math.floor(waveIndex / this.waveTemplates.length);
     const hpBonus = waveIndex * 4 + decade * 22;
 
     return {
-      count: template.count,
-      interval: template.interval,
+      count: this.getWaveEnemyCount(waveNumber),
+      interval: this.getWaveSpawnInterval(waveNumber, template.interval),
       hp: template.hp + hpBonus,
       speed: template.speed + Math.min(decade * 3, 15),
       damage: template.damage + decade + Math.floor(waveIndex / 15),
@@ -2236,14 +3184,180 @@ class SceneDemo extends Phaser.Scene {
     };
   }
 
+  getWaveEnemyCount(waveNumber) {
+    const template = this.waveTemplates[(waveNumber - 1) % this.waveTemplates.length];
+    const decadeIndex = Math.floor((waveNumber - 1) / this.waveTemplates.length);
+    const configuredBonus = this.wavePressureConfig.countBonusesByDecade[decadeIndex];
+    const overflowDecades = Math.max(0, decadeIndex - (this.wavePressureConfig.countBonusesByDecade.length - 1));
+    const lastConfiguredBonus = this.wavePressureConfig.countBonusesByDecade[
+      this.wavePressureConfig.countBonusesByDecade.length - 1
+    ];
+    const bonus = configuredBonus ?? (
+      lastConfiguredBonus +
+      overflowDecades * this.wavePressureConfig.extraCountBonusPerDecade
+    );
+
+    return template.count + bonus;
+  }
+
+  getWaveSpawnInterval(waveNumber, baseInterval) {
+    const decadeIndex = Math.floor((waveNumber - 1) / this.waveTemplates.length);
+    const multiplierIndex = Math.min(
+      decadeIndex,
+      this.wavePressureConfig.spawnIntervalMultipliers.length - 1
+    );
+    const multiplier = this.wavePressureConfig.spawnIntervalMultipliers[multiplierIndex];
+
+    return Math.max(
+      this.wavePressureConfig.minimumSpawnInterval,
+      baseInterval * multiplier
+    );
+  }
+
+  getWaveComposition(waveNumber) {
+    return this.enemySpawnConfig.waveCompositions.find(
+      (composition) => waveNumber <= composition.maxWave
+    );
+  }
+
+  buildWaveQueue(waveIndex, totalCount) {
+    const waveNumber = waveIndex + 1;
+    const composition = this.getWaveComposition(waveNumber);
+    const enemyTypes = ["basic", "fast", "tank", "ranged", "breaker", "leaper"];
+    const counts = {
+      basic: totalCount,
+      fast: 0,
+      tank: 0,
+      ranged: 0,
+      breaker: 0,
+      leaper: 0
+    };
+
+    for (const type of enemyTypes.slice(1)) {
+      counts[type] = Math.round(totalCount * (composition[type] || 0));
+      counts.basic -= counts[type];
+    }
+
+    while (counts.basic < 0) {
+      const donor = enemyTypes.slice(1)
+        .filter((type) => counts[type] > 0)
+        .sort((left, right) => counts[right] - counts[left])[0];
+
+      if (!donor) break;
+
+      counts[donor]--;
+      counts.basic++;
+    }
+
+    const minimums = { basic: 0, fast: 0, tank: 0, ranged: 0, breaker: 0, leaper: 0 };
+
+    if (waveNumber >= 9 && totalCount > 0) {
+      minimums.tank = 1;
+    }
+
+    if (waveNumber >= 11 && waveNumber < 21 && totalCount >= 3) {
+      minimums.basic = 1;
+      minimums.fast = 1;
+      minimums.tank = 1;
+    }
+
+    for (const type of ["ranged", "breaker", "leaper"]) {
+      const config = this.enemySpawnConfig[type];
+
+      if (config && waveNumber >= config.minWave && waveNumber < 21) {
+        const requiredCount = 3 + ["ranged", "breaker", "leaper"].filter(
+          (specialType) => this.enemySpawnConfig[specialType] && waveNumber >= this.enemySpawnConfig[specialType].minWave
+        ).length;
+
+        if (totalCount >= requiredCount) {
+          minimums[type] = 1;
+        }
+      }
+    }
+
+    if (waveNumber >= 21) {
+      minimums.basic = totalCount > 0 ? 1 : 0;
+      const focusType = this.getSpecialFocusType(waveNumber);
+
+      if (focusType && totalCount >= 2) {
+        minimums[focusType] = 1;
+      }
+    }
+
+    for (const type of enemyTypes) {
+      while (counts[type] < minimums[type]) {
+        const donor = enemyTypes
+          .filter((candidate) => candidate !== type && counts[candidate] > minimums[candidate])
+          .sort((left, right) => counts[right] - counts[left])[0];
+
+        if (!donor) break;
+
+        counts[donor]--;
+        counts[type]++;
+      }
+    }
+
+    const queue = [
+      ...Array(counts.basic).fill("basic"),
+      ...Array(counts.fast).fill("fast"),
+      ...Array(counts.tank).fill("tank"),
+      ...Array(counts.ranged).fill("ranged"),
+      ...Array(counts.breaker).fill("breaker"),
+      ...Array(counts.leaper).fill("leaper")
+    ];
+
+    for (let index = queue.length - 1; index > 0; index--) {
+      const swapIndex = Phaser.Math.Between(0, index);
+      [queue[index], queue[swapIndex]] = [queue[swapIndex], queue[index]];
+    }
+
+    this.repairEnemyQueueRuns(queue, "tank");
+    for (const type of this.enemySpawnConfig.specialRotation || []) {
+      this.repairEnemyQueueRuns(queue, type);
+    }
+
+    return queue;
+  }
+
+  getSpecialFocusType(waveNumber) {
+    const specialRotation = this.enemySpawnConfig.specialRotation || [];
+    return specialRotation[(waveNumber - 21) % specialRotation.length] || null;
+  }
+
+  repairEnemyQueueRuns(queue, type) {
+    let repaired = true;
+
+    while (repaired) {
+      repaired = false;
+
+      for (let index = 2; index < queue.length; index++) {
+        if (queue[index - 2] !== type || queue[index - 1] !== type || queue[index] !== type) continue;
+
+        const swapIndex = queue.findIndex(
+          (candidate, candidateIndex) => candidate !== type && candidateIndex !== index - 2 && candidateIndex !== index - 1
+        );
+
+        if (swapIndex !== -1) {
+          [queue[index], queue[swapIndex]] = [queue[swapIndex], queue[index]];
+          repaired = true;
+        }
+
+        break;
+      }
+    }
+  }
+
   getFrontlineLabel() {
     return this.enemyDirection < 0 ? "右翼战区 " : "左翼战区 ";
   }
 
-  switchFrontline(completedWave) {
-    if (this.frontlineTransitioning) return;
+  getFrontlineShortLabel() {
+    return this.enemyDirection < 0 ? "右翼" : "左翼";
+  }
 
-    const savedCount = this.saveCollectorOutput();
+  switchFrontline(completedWave) {
+    if (this.gameState !== "playing" || this.frontlineTransitioning) return;
+
     const outgoingX = -this.enemyDirection * this.W;
 
     this.cancelPendingDemolish();
@@ -2255,7 +3369,7 @@ class SceneDemo extends Phaser.Scene {
     this.waveStartTimer = this.waveRestTime;
     this.updateMeteorPreview(this.input.activePointer);
 
-    this.showMessage(`第 ${completedWave} 波清除，保存 ${savedCount} 个采集器，正在平移视角`);
+    this.showMessage("战区转移中");
     this.updateUI();
 
     this.tweens.add({
@@ -2268,6 +3382,8 @@ class SceneDemo extends Phaser.Scene {
   }
 
   enterNextFrontline(outgoingX) {
+    if (this.gameState !== "playing") return;
+
     const oldPortalX = this.portalX;
     const oldPlanetX = this.planetX;
 
@@ -2275,13 +3391,15 @@ class SceneDemo extends Phaser.Scene {
     [this.portalX, this.planetX] = [this.planetX, this.portalX];
     this.moveVisuals(this.portalVisuals, this.portalX - oldPortalX, 0);
     this.moveVisuals(this.planetVisuals, this.planetX - oldPlanetX, 0);
+    this.frontlineIndex++;
+    this.activeWing = this.getWingName(this.frontlineIndex);
     this.updateBattlefieldOrientation();
     this.updateDirectionVisuals();
-    this.frontlineIndex++;
     this.updateFrontlineOwnership();
+    this.restoreActiveWingState();
     this.frontlineLayer.x = -outgoingX;
 
-    this.showMessage(`正在进入${this.getFrontlineLabel()}，远端采集器继续产出`);
+    this.showMessage(`转战${this.getFrontlineShortLabel()}`);
     this.updateUI();
 
     this.tweens.add({
@@ -2294,10 +3412,21 @@ class SceneDemo extends Phaser.Scene {
   }
 
   finishFrontlineTransition() {
+    if (this.gameState !== "playing") return;
+
     this.frontlineLayer.x = 0;
-    this.frontlineTransitioning = false;
-    this.showMessage(`${this.getFrontlineLabel()}已就位，准备下一波`);
-    this.updateUI();
+    const finishTransition = () => {
+      if (this.gameState !== "playing") return;
+      this.frontlineTransitioning = false;
+      this.updateUI();
+    };
+
+    if (this.activeWing === "left" && !this.firstLeftWingSupplyDelivered) {
+      this.deliverFirstLeftWingSupply(finishTransition);
+      return;
+    }
+
+    finishTransition();
   }
 
   moveVisuals(items, dx, dy) {
@@ -2323,6 +3452,198 @@ class SceneDemo extends Phaser.Scene {
     this.directionLabel.setPosition(isLeftFrontline ? 270 : 920, this.H / 2 - 105);
   }
 
+  isDirectionalBuildingVisual(id) {
+    return id === "turret" || id === "laser";
+  }
+
+  getWingEnemyDirection(frontlineId) {
+    return frontlineId % 2 === 1 ? -1 : 1;
+  }
+
+  getWingFacingDirection(frontlineId, role = "enemy") {
+    const enemyDirection = this.getWingEnemyDirection(frontlineId);
+    return role === "building" ? -enemyDirection : enemyDirection;
+  }
+
+  getWingFlipX(frontlineId, role = "enemy") {
+    return this.getWingFacingDirection(frontlineId, role) < 0;
+  }
+
+  applyWingFacing(sprite, frontlineId, role = "enemy") {
+    if (!sprite?.setFlipX) return;
+
+    // 朝向只由所属战区决定，停止、攻击和跃迁均不改变视觉方向。
+    sprite.setFlipX(this.getWingFlipX(frontlineId, role));
+  }
+
+  applyEnemyWingFacing(enemy) {
+    if (!enemy?.body) return;
+    this.applyWingFacing(enemy.body, enemy.frontlineId, "enemy");
+  }
+
+  getBuildingFacingDirection(building) {
+    return building.facingDirection ?? this.getWingFacingDirection(building.frontlineId, "building");
+  }
+
+  getWingName(frontlineId = this.frontlineIndex) {
+    return frontlineId % 2 === 1 ? "right" : "left";
+  }
+
+  createWingStates() {
+    return {
+      left: { buildings: [], shields: [], cellOccupancy: new Map(), shieldOccupancy: new Map() },
+      right: { buildings: [], shields: [], cellOccupancy: new Map(), shieldOccupancy: new Map() }
+    };
+  }
+
+  getWingState(wing = this.activeWing) {
+    return this.wingStates?.[wing] || { buildings: [], shields: [], cellOccupancy: new Map(), shieldOccupancy: new Map() };
+  }
+
+  getGridCellKey(cell) {
+    return `${cell.row}:${cell.col}`;
+  }
+
+  getShieldSlotKey(slot) {
+    return `${slot.row}:${slot.edge}`;
+  }
+
+  findGridCellByKey(key) {
+    for (const row of this.gridCells) {
+      for (const cell of row) {
+        if (this.getGridCellKey(cell) === key) return cell;
+      }
+    }
+    return null;
+  }
+
+  findShieldSlotByKey(key) {
+    return this.shieldSlots.find((slot) => this.getShieldSlotKey(slot) === key) || null;
+  }
+
+  registerBuildingInWing(building) {
+    const state = this.getWingState(building?.wing);
+    if (!building || !state || !building.gridKey) return;
+
+    if (!state.buildings.includes(building)) state.buildings.push(building);
+    state.cellOccupancy.set(building.gridKey, building);
+  }
+
+  registerShieldInWing(shield) {
+    const state = this.getWingState(shield?.wing);
+    if (!shield || !state || !shield.slotKey) return;
+
+    if (!state.shields.includes(shield)) state.shields.push(shield);
+    state.shieldOccupancy.set(shield.slotKey, shield);
+  }
+
+  isBuildingRegistered(building) {
+    if (!building || building.destroyed) return false;
+    if (!building.wing || !building.gridKey || !this.wingStates) return building.cell?.building === building;
+    return this.getWingState(building.wing).cellOccupancy.get(building.gridKey) === building;
+  }
+
+  isShieldRegistered(shield) {
+    if (!shield || shield.destroyed) return false;
+    if (!shield.wing || !shield.slotKey || !this.wingStates) return shield.slot?.shield === shield;
+    return this.getWingState(shield.wing).shieldOccupancy.get(shield.slotKey) === shield;
+  }
+
+  setWingObjectVisible(object, visible) {
+    if (!object) return;
+    object.setVisible?.(visible);
+    object.setActive?.(visible);
+  }
+
+  setBuildingWingVisibility(building, visible) {
+    if (!building) return;
+
+    for (const object of [
+      building.glow,
+      building.body,
+      building.core,
+      building.text,
+      building.healthBarBg,
+      building.healthBarFill,
+      building.timerText
+    ]) {
+      this.setWingObjectVisible(object, visible);
+    }
+
+    if (visible && this.isDirectionalBuildingVisual(building.id)) {
+      this.applyWingFacing(building.body, building.frontlineId, "building");
+    }
+  }
+
+  setShieldWingVisibility(shield, visible) {
+    if (!shield) return;
+
+    for (const object of [shield.shieldCore, shield.healthBarBg, shield.healthBarFill, shield.text]) {
+      this.setWingObjectVisible(object, visible);
+    }
+  }
+
+  detachActiveWingState() {
+    const state = this.getWingState(this.activeWing);
+
+    for (const building of state.buildings) {
+      this.setBuildingWingVisibility(building, false);
+    }
+    for (const shield of state.shields) {
+      this.setShieldWingVisibility(shield, false);
+      this.tweens.killTweensOf?.([shield.slot?.line, shield.shieldCore]);
+    }
+
+    for (const row of this.gridCells) {
+      for (const cell of row) {
+        cell.occupied = false;
+        cell.building = null;
+        this.resetCellStroke(cell);
+      }
+    }
+    for (const slot of this.shieldSlots) {
+      slot.placed = false;
+      slot.shield = null;
+      slot.line.setAlpha(1);
+      slot.line.setFillStyle(0x60a5fa, 0.13);
+      slot.line.setStrokeStyle(1, 0x93c5fd, 0.25);
+    }
+  }
+
+  restoreActiveWingState() {
+    const state = this.getWingState(this.activeWing);
+
+    for (const building of state.buildings) {
+      if (building.destroyed || !this.isBuildingRegistered(building)) continue;
+      const cell = this.findGridCellByKey(building.gridKey);
+      if (!cell) continue;
+
+      building.cell = cell;
+      building.frontlineId = this.frontlineIndex;
+      building.region = cell.type;
+      building.facingDirection = this.isDirectionalBuildingVisual(building.id)
+        ? this.getWingFacingDirection(this.frontlineIndex, "building")
+        : 0;
+      cell.occupied = true;
+      cell.building = building;
+      this.updateBuildingHealthBar(building);
+      this.setBuildingWingVisibility(building, true);
+    }
+
+    for (const shield of state.shields) {
+      if (shield.destroyed || !this.isShieldRegistered(shield)) continue;
+      const slot = this.findShieldSlotByKey(shield.slotKey);
+      if (!slot) continue;
+
+      shield.slot = slot;
+      shield.frontlineId = this.frontlineIndex;
+      slot.placed = true;
+      slot.shield = shield;
+      this.applyShieldLevel(shield, shield.shieldLevel, false);
+      this.setShieldWingVisibility(shield, true);
+    }
+  }
+
   updateFrontlineOwnership() {
     for (const row of this.gridCells) {
       for (const cell of row) {
@@ -2336,28 +3657,18 @@ class SceneDemo extends Phaser.Scene {
   }
 
   saveCollectorOutput() {
-    let savedCount = 0;
-
-    for (const building of this.buildings) {
-      if (building.id !== "collector" || building.destroyed) continue;
-
-      this.storedCollectors.push({
-        frontlineId: building.frontlineId,
-        level: building.collectLevel,
-        amount: building.collectAmount,
-        interval: building.collectInterval,
-        timer: building.collectTimer
-      });
-
-      savedCount++;
-    }
-
-    return savedCount;
+    // 双战区建筑保留在原战区，离开后不再转为后台产能。
+    this.storedCollectors = [];
+    return 0;
   }
 
   getCollectorCounts() {
-    const current = this.buildings.filter((building) => building.id === "collector" && !building.destroyed).length;
-    const stored = this.storedCollectors.length;
+    const current = this.buildings.filter((building) => (
+      building.id === "collector" && !building.destroyed && building.wing === this.activeWing
+    )).length;
+    const stored = this.buildings.filter((building) => (
+      building.id === "collector" && !building.destroyed && building.wing !== this.activeWing
+    )).length;
 
     return {
       current,
@@ -2371,27 +3682,11 @@ class SceneDemo extends Phaser.Scene {
       this.removeProjectile(projectile);
     }
 
-    for (const shield of [...this.shields]) {
-      this.removeShield(shield);
-    }
-
     for (const enemy of [...this.enemies]) {
       this.destroyEnemy(enemy, false);
     }
 
-    for (const building of [...this.buildings]) {
-      this.destroyBuilding(building);
-    }
-
-    this.buildings = [];
-
-    for (const row of this.gridCells) {
-      for (const cell of row) {
-        cell.occupied = false;
-        cell.building = null;
-        this.resetCellStroke(cell);
-      }
-    }
+    this.detachActiveWingState();
   }
 
   getDemolishRefund(target) {
@@ -2406,6 +3701,7 @@ class SceneDemo extends Phaser.Scene {
       this.frontlineTransitioning ||
       !target ||
       target.destroyed ||
+      target.wing !== this.activeWing ||
       target.frontlineId !== this.frontlineIndex
     ) {
       return false;
@@ -2434,6 +3730,7 @@ class SceneDemo extends Phaser.Scene {
     if (
       !building ||
       building.destroyed ||
+      building.wing !== this.activeWing ||
       building.frontlineId !== this.frontlineIndex ||
       building.cell?.building !== building
     ) {
@@ -2449,10 +3746,10 @@ class SceneDemo extends Phaser.Scene {
     if (refund > 0) {
       this.addStarEnergy(refund);
       this.floatText(x, y - 22, `拆除 +${refund}`, "#facc15");
-      this.showMessage(`建筑已拆除，返还 ${refund} 星能`);
+      this.showMessage("已拆除");
     } else {
       this.floatText(x, y - 22, "已拆除", "#fb7185");
-      this.showMessage("建筑已拆除");
+      this.showMessage("已拆除");
     }
 
     return true;
@@ -2462,6 +3759,7 @@ class SceneDemo extends Phaser.Scene {
     if (
       !shield ||
       shield.destroyed ||
+      shield.wing !== this.activeWing ||
       shield.frontlineId !== this.frontlineIndex ||
       shield.slot?.shield !== shield
     ) {
@@ -2477,10 +3775,10 @@ class SceneDemo extends Phaser.Scene {
     if (refund > 0) {
       this.addStarEnergy(refund);
       this.floatText(x, y - 22, `拆除 +${refund}`, "#facc15");
-      this.showMessage(`引力护盾已拆除，返还 ${refund} 星能`);
+      this.showMessage("已拆除");
     } else {
       this.floatText(x, y - 22, "已拆除", "#fb7185");
-      this.showMessage("引力护盾已拆除");
+      this.showMessage("已拆除");
     }
 
     return true;
@@ -2497,7 +3795,7 @@ class SceneDemo extends Phaser.Scene {
   }
 
   damageBuilding(building, amount) {
-    if (!building || building.destroyed) return;
+    if (!building || building.destroyed || building.wing !== this.activeWing) return;
 
     building.currentHp = Math.max(0, building.currentHp - amount);
     this.updateBuildingHealthBar(building);
@@ -2505,7 +3803,7 @@ class SceneDemo extends Phaser.Scene {
     if (building.currentHp <= 0) {
       const label = building.text?.text || "建筑";
       this.destroyBuilding(building);
-      this.showMessage(`${label}被摧毁，敌人继续推进`);
+      this.showMessage("建筑被摧毁", "danger");
     }
   }
 
@@ -2520,6 +3818,11 @@ class SceneDemo extends Phaser.Scene {
       building.cell.building = null;
       this.resetCellStroke(building.cell);
     }
+
+    const state = this.getWingState(building.wing);
+    state.cellOccupancy.delete(building.gridKey);
+    const stateIndex = state.buildings.indexOf(building);
+    if (stateIndex !== -1) state.buildings.splice(stateIndex, 1);
 
     const index = this.buildings.indexOf(building);
 
@@ -2543,13 +3846,27 @@ class SceneDemo extends Phaser.Scene {
     this.updateUI();
   }
 
-  spawnEnemy(wave) {
+  spawnEnemy(wave, type = "basic") {
     const row = Phaser.Math.Between(0, this.rows - 1);
     const x = this.portalX + this.enemyDirection * 12;
     const y = this.startY + row * this.cellH;
+    const frontlineId = this.frontlineIndex;
+    const facingDirection = this.getWingFacingDirection(frontlineId, "enemy");
 
-    const aura = this.add.circle(0, 0, 22, 0xfb7185, 0.14);
-    const enemyVisual = ENEMY_VISUALS.basic;
+    const typeConfig = this.enemySpawnConfig[type] || this.enemySpawnConfig.basic;
+    const isFast = type === "fast";
+    const isTank = type === "tank";
+    const isBreaker = type === "breaker";
+    const isLeaper = type === "leaper";
+    const isRanged = type === "ranged";
+    const aura = this.add.circle(
+      0,
+      0,
+      isTank ? 25 : isBreaker ? 23 : isLeaper ? 19 : isRanged ? 20 : isFast ? 18 : 22,
+      isTank ? 0x7f1d1d : isBreaker ? 0xc026d3 : isLeaper ? 0x8b5cf6 : isRanged ? 0xa78bfa : isFast ? 0xe879f9 : 0xfb7185,
+      0.14
+    );
+    const enemyVisual = ENEMY_VISUALS[type] || ENEMY_VISUALS.basic;
     const usesTexture = this.hasTexture(enemyVisual.texture);
     const body = usesTexture
       ? this.add.image(0, 0, enemyVisual.texture).setScale(enemyVisual.scale)
@@ -2558,7 +3875,6 @@ class SceneDemo extends Phaser.Scene {
       body.setStrokeStyle(3, 0x3f0618, 1);
       body.setAngle(45);
     }
-
     const core = usesTexture ? null : this.add.circle(-4, -2, 6, 0xffc4d6, 0.9);
 
     const hpBg = this.add.rectangle(-19, -27, 38, 5, 0x020617, 0.9);
@@ -2572,26 +3888,35 @@ class SceneDemo extends Phaser.Scene {
     container.setDepth(70);
 
     const enemy = {
+      type,
       row,
-      frontlineId: this.frontlineIndex,
+      frontlineId,
       x,
       y,
       lastX: x,
-      hp: wave.hp,
-      maxHp: wave.hp,
-      speed: wave.speed,
-      damage: wave.damage,
-      attackCooldown: this.enemyCombatConfig.attackInterval,
+      hp: Math.max(1, Math.round(wave.hp * typeConfig.hpMultiplier)),
+      maxHp: Math.max(1, Math.round(wave.hp * typeConfig.hpMultiplier)),
+      speed: wave.speed * typeConfig.speedMultiplier,
+      damage: Math.max(1, Math.round(wave.damage * typeConfig.damageMultiplier)),
+      attackCooldown: typeConfig.attackCooldown ?? this.enemyCombatConfig.attackInterval,
+      attackRange: typeConfig.attackRange ?? 0,
+      shieldDamageMultiplier: typeConfig.shieldDamageMultiplier ?? 1,
       attackTimer: 0,
       attackTarget: null,
-      reward: wave.reward,
-      direction: this.enemyDirection,
+      reward: typeConfig.killReward,
+      killCounted: false,
+      direction: facingDirection,
+      hasLeaped: false,
+      leapAttempted: false,
+      isLeaping: false,
       radius: 18,
+      body,
       container,
       hpFill,
       dead: false
     };
 
+    this.applyEnemyWingFacing(enemy);
     this.enemies.push(enemy);
 
     const flash = this.addToFrontline(this.add.circle(x, y, 28, 0xe879f9, 0.22));
@@ -2607,10 +3932,12 @@ class SceneDemo extends Phaser.Scene {
   }
 
   updateEnemyAttacks(dt) {
+    if (this.gameState !== "playing") return;
+
     for (const enemy of this.enemies) {
       if (enemy.dead || !enemy.attackTarget) continue;
 
-      if (!this.isValidEnemyTarget(enemy, enemy.attackTarget)) {
+      if (!this.isEnemyAttackTargetValid(enemy, enemy.attackTarget)) {
         this.clearEnemyTarget(enemy);
         continue;
       }
@@ -2622,15 +3949,25 @@ class SceneDemo extends Phaser.Scene {
 
         enemy.attackTimer -= enemy.attackCooldown;
 
-        if (!this.isValidEnemyTarget(enemy, target)) {
+        if (!this.isEnemyAttackTargetValid(enemy, target)) {
           this.clearEnemyTarget(enemy);
           break;
         }
 
+        const attackDamage = this.getEnemyAttackDamage(enemy, target);
+
         if (target.targetType === "building") {
-          this.damageBuilding(target, enemy.damage);
+          this.damageBuilding(target, attackDamage);
         } else {
-          this.damageShield(target, enemy.damage);
+          this.damageShield(target, attackDamage);
+
+          if (enemy.type === "breaker") {
+            this.floatText(target.slot.x, target.slot.y - 42, `-${attackDamage}`, "#f472b6");
+          }
+        }
+
+        if (enemy.type === "ranged") {
+          this.fireRangedShot(enemy, target);
         }
 
         if (!enemy.dead) {
@@ -2646,17 +3983,28 @@ class SceneDemo extends Phaser.Scene {
   }
 
   updateEnemies(dt) {
+    if (this.gameState !== "playing") return;
+
     for (let i = this.enemies.length - 1; i >= 0; i--) {
       const enemy = this.enemies[i];
 
       if (enemy.dead) continue;
 
       if (enemy.attackTarget) {
-        if (this.isValidEnemyTarget(enemy, enemy.attackTarget)) {
+        if (this.isEnemyAttackTargetValid(enemy, enemy.attackTarget)) {
           continue;
         }
 
         this.clearEnemyTarget(enemy);
+      }
+
+      if (enemy.type === "ranged") {
+        const rangedTarget = this.findRangedTarget(enemy);
+
+        if (rangedTarget) {
+          this.startRangedEnemyAttack(enemy, rangedTarget);
+          continue;
+        }
       }
 
       enemy.lastX = enemy.x;
@@ -2666,6 +4014,10 @@ class SceneDemo extends Phaser.Scene {
       const blockingTarget = this.findBlockingTarget(enemy);
 
       if (blockingTarget) {
+        if (enemy.type === "leaper" && this.tryLeaperJump(enemy, blockingTarget)) {
+          continue;
+        }
+
         this.startEnemyAttack(enemy, blockingTarget);
         continue;
       }
@@ -2677,6 +4029,7 @@ class SceneDemo extends Phaser.Scene {
       if (hitPlanet) {
         this.damagePlanet(enemy.damage);
         this.destroyEnemy(enemy, false);
+        if (this.isGameOver) return;
       }
     }
   }
@@ -2723,6 +4076,30 @@ class SceneDemo extends Phaser.Scene {
     return candidates[0]?.target ?? null;
   }
 
+  findRangedTarget(enemy) {
+    const candidates = [];
+
+    for (const building of this.buildings) {
+      if (this.isValidEnemyTarget(enemy, building)) {
+        candidates.push(building);
+      }
+    }
+
+    for (const shield of this.shields) {
+      if (this.isValidEnemyTarget(enemy, shield)) {
+        candidates.push(shield);
+      }
+    }
+
+    return candidates
+      .map((target) => ({
+        target,
+        distance: (this.getEnemyTargetX(target) - enemy.x) * enemy.direction
+      }))
+      .filter(({ distance }) => distance >= 0 && distance <= enemy.attackRange)
+      .sort((left, right) => left.distance - right.distance)[0]?.target ?? null;
+  }
+
   getBlockingContactX(enemy, target) {
     if (target.targetType === "shield") {
       return target.slot.x - enemy.direction * enemy.radius;
@@ -2750,8 +4127,90 @@ class SceneDemo extends Phaser.Scene {
     enemy.attackTimer = 0;
   }
 
+  tryLeaperJump(enemy, target) {
+    if (enemy.hasLeaped || enemy.leapAttempted || !this.isValidEnemyTarget(enemy, target)) return false;
+
+    enemy.leapAttempted = true;
+
+    const landingX = this.getLeaperLandingX(enemy, target);
+
+    if (!this.isValidLeaperLanding(enemy, target, landingX)) return false;
+
+    enemy.hasLeaped = true;
+    enemy.isLeaping = true;
+    this.clearEnemyTarget(enemy);
+    enemy.x = landingX;
+    enemy.lastX = landingX;
+    enemy.container.x = landingX;
+
+    this.tweens.add({
+      targets: enemy.container,
+      alpha: 0.18,
+      duration: 90,
+      yoyo: true,
+      onComplete: () => {
+        if (!enemy.dead && enemy.container?.active) {
+          enemy.container.setAlpha(1);
+          enemy.isLeaping = false;
+        }
+      }
+    });
+
+    return true;
+  }
+
+  getLeaperLandingX(enemy, target) {
+    return this.getEnemyTargetX(target) + enemy.direction * this.cellW;
+  }
+
+  isValidLeaperLanding(enemy, target, landingX) {
+    if (!Number.isFinite(landingX)) return false;
+
+    const minX = this.startX - this.cellW / 2;
+    const maxX = this.startX + (this.cols - 1) * this.cellW + this.cellW / 2;
+    const planetBoundary = enemy.direction < 0
+      ? this.planetX + 65 + enemy.radius
+      : this.planetX - 65 - enemy.radius;
+
+    if (landingX < minX || landingX > maxX) return false;
+    if (enemy.direction < 0 && landingX <= planetBoundary) return false;
+    if (enemy.direction > 0 && landingX >= planetBoundary) return false;
+
+    const nearbyTargets = [...this.buildings, ...this.shields];
+    return !nearbyTargets.some((candidate) => {
+      if (candidate === target || !this.isValidEnemyTarget(enemy, candidate)) return false;
+      return Math.abs(this.getEnemyTargetX(candidate) - landingX) < this.cellW * 0.45;
+    });
+  }
+
+  startRangedEnemyAttack(enemy, target) {
+    if (!this.isEnemyAttackTargetValid(enemy, target)) return;
+
+    enemy.attackTarget = target;
+    enemy.attackTimer = 0;
+  }
+
+  getEnemyTargetX(target) {
+    return target.targetType === "shield" ? target.slot.x : target.cell.x;
+  }
+
+  isEnemyAttackTargetValid(enemy, target) {
+    if (!this.isValidEnemyTarget(enemy, target)) return false;
+
+    if (enemy.type !== "ranged") return true;
+
+    const distance = (this.getEnemyTargetX(target) - enemy.x) * enemy.direction;
+    return distance >= 0 && distance <= enemy.attackRange;
+  }
+
+  getEnemyAttackDamage(enemy, target) {
+    const multiplier = target?.targetType === "shield" ? enemy.shieldDamageMultiplier : 1;
+    return Math.max(1, Math.round(enemy.damage * multiplier));
+  }
+
   isValidEnemyTarget(enemy, target) {
     if (!enemy || enemy.dead || !target || target.destroyed) return false;
+    if (target.wing !== this.activeWing) return false;
     if (target.frontlineId !== enemy.frontlineId) return false;
 
     if (target.targetType === "building") {
@@ -2789,22 +4248,27 @@ class SceneDemo extends Phaser.Scene {
   }
 
   damagePlanet(amount) {
+    if (this.isGameOver || this.gameState !== "playing") return;
+
     this.planetHp = Math.max(0, this.planetHp - amount);
 
     this.floatText(this.planetX, this.planetY - 78, `-${amount}`, "#fb7185");
-    this.showMessage(`虚空敌人撞击星球，生命 -${amount}`);
+    this.showMessage("星球受损", "danger");
 
     if (this.planetHp <= 0) {
-      this.loseGame();
+      this.triggerGameOver();
     } else {
       this.updateUI();
     }
   }
 
   updateBuildingAttacks(dt) {
+    if (this.gameState !== "playing") return;
+
     for (const building of this.buildings) {
       if (
         building.destroyed ||
+        building.wing !== this.activeWing ||
         building.frontlineId !== this.frontlineIndex ||
         building.attackDamage <= 0
       ) {
@@ -2858,7 +4322,7 @@ class SceneDemo extends Phaser.Scene {
   }
 
   fireTurretBullet(building, target) {
-    const muzzleX = building.cell.x - target.direction * 18;
+    const muzzleX = this.getBuildingMuzzleX(building);
     const bullet = this.addToFrontline(this.add.circle(muzzleX, building.cell.y, 6, 0x38bdf8, 0.95));
     bullet.setStrokeStyle(2, 0xdbeafe, 0.9);
     bullet.setDepth(69);
@@ -2887,7 +4351,7 @@ class SceneDemo extends Phaser.Scene {
     shot.setDepth(68);
     shot.lineStyle(width, color, 0.9);
     shot.beginPath();
-    shot.moveTo(building.cell.x - target.direction * 18, building.cell.y);
+    shot.moveTo(this.getBuildingMuzzleX(building), building.cell.y);
     shot.lineTo(target.x + target.direction * target.radius, target.y);
     shot.strokePath();
 
@@ -2908,7 +4372,33 @@ class SceneDemo extends Phaser.Scene {
     this.damageEnemy(target, building.attackDamage);
   }
 
+  getBuildingMuzzleX(building) {
+    return building.cell.x + this.getBuildingFacingDirection(building) * 18;
+  }
+
+  fireRangedShot(enemy, target) {
+    const targetX = this.getEnemyTargetX(target);
+    const targetY = target.targetType === "shield" ? target.slot.y : target.cell.y;
+    const shot = this.addToFrontline(this.add.graphics());
+
+    shot.setDepth(68);
+    shot.lineStyle(2, 0xa78bfa, 0.9);
+    shot.beginPath();
+    shot.moveTo(enemy.x - enemy.direction * enemy.radius, enemy.y);
+    shot.lineTo(targetX, targetY);
+    shot.strokePath();
+
+    this.tweens.add({
+      targets: shot,
+      alpha: 0,
+      duration: 120,
+      onComplete: () => shot.destroy()
+    });
+  }
+
   updateProjectiles(dt) {
+    if (this.gameState !== "playing") return;
+
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const projectile = this.projectiles[i];
       const target = projectile.target;
@@ -2947,7 +4437,7 @@ class SceneDemo extends Phaser.Scene {
   }
 
   damageEnemy(enemy, amount) {
-    if (!enemy || enemy.dead) return;
+    if (this.gameState !== "playing" || !enemy || enemy.dead) return;
 
     enemy.hp = Math.max(0, enemy.hp - amount);
     this.updateEnemyHealthBar(enemy);
@@ -2969,6 +4459,9 @@ class SceneDemo extends Phaser.Scene {
     if (!enemy || enemy.dead) return;
 
     enemy.dead = true;
+    enemy.hasLeaped = false;
+    enemy.leapAttempted = false;
+    enemy.isLeaping = false;
     this.clearEnemyTarget(enemy);
 
     const index = this.enemies.indexOf(enemy);
@@ -2983,6 +4476,10 @@ class SceneDemo extends Phaser.Scene {
     this.tweens.killTweensOf(enemy.container);
     enemy.container.destroy();
 
+    if (giveReward) {
+      this.recordEnemyKill(enemy);
+    }
+
     if (giveReward && reward > 0) {
       this.addStarEnergy(reward);
       this.floatText(x, y - 30, `+${reward}`, "#facc15");
@@ -2992,14 +4489,14 @@ class SceneDemo extends Phaser.Scene {
   }
 
   damageShield(shield, amount) {
-    if (!shield || shield.destroyed) return;
+    if (!shield || shield.destroyed || shield.wing !== this.activeWing) return;
 
     shield.currentHp = Math.max(0, shield.currentHp - amount);
     this.updateShieldHealthBar(shield);
 
     if (shield.currentHp <= 0) {
       this.removeShield(shield);
-      this.showMessage("引力护盾被击穿");
+      this.showMessage("护盾被击穿", "danger");
     }
   }
 
@@ -3013,6 +4510,11 @@ class SceneDemo extends Phaser.Scene {
       shield.slot.placed = false;
       shield.slot.shield = null;
     }
+
+    const state = this.getWingState(shield.wing);
+    state.shieldOccupancy.delete(shield.slotKey);
+    const stateIndex = state.shields.indexOf(shield);
+    if (stateIndex !== -1) state.shields.splice(stateIndex, 1);
 
     this.tweens.killTweensOf([shield.slot.line, shield.shieldCore]);
 
@@ -3033,17 +4535,7 @@ class SceneDemo extends Phaser.Scene {
   }
 
   loseGame() {
-    if (this.gameState !== "playing") return;
-
-    this.gameState = "lost";
-    this.planetHp = 0;
-    this.demolishMode = false;
-    this.cancelPendingDemolish();
-    this.clearCardSelection();
-    this.updateDemolishButtonState();
-    this.updateMeteorPreview(this.input.activePointer);
-    this.showMessage("晨曦星失守，虚空突破了防线");
-    this.updateUI();
+    this.triggerGameOver();
   }
 
   getWaveText() {
@@ -3067,6 +4559,21 @@ class SceneDemo extends Phaser.Scene {
     return `波次：第 ${waveNumber} 波  场上：${this.enemies.length}  待刷：${waitingEnemies}`;
   }
 
+  getHudNextWaveText() {
+    if (this.gameState === "lost") return "防线失守";
+    if (this.gameState === "won") return "守护完成";
+    if (this.gameState === "stage_choice") return "阶段守护完成";
+    if (this.frontlineTransitioning) return "战区转移中";
+
+    if (!this.waveActive && this.waveSpawned === 0 && this.waveStartTimer > 0) {
+      return `00:${String(Math.max(0, Math.ceil(this.waveStartTimer))).padStart(2, "0")}`;
+    }
+
+    const wave = this.getWaveConfig(this.currentWaveIndex);
+    const waitingEnemies = wave ? Math.max(0, wave.count - this.waveSpawned) : 0;
+    return `来袭 ${this.enemies.length}`;
+  }
+
   handleGlobalClick(pointer) {
     if (this.gameState !== "playing") return;
 
@@ -3085,19 +4592,58 @@ class SceneDemo extends Phaser.Scene {
     }
   }
 
-  showMessage(text) {
+  getMessageStyle(text, type = "info") {
+    let resolvedType = type;
+
+    if (resolvedType === "info") {
+      if (/摧毁|撞击|击穿|失守|失败|威胁/.test(text)) {
+        resolvedType = "danger";
+      } else if (/星能不足|无法|不能|禁止|不可|请先|没有/.test(text)) {
+        resolvedType = "warning";
+      } else if (/补给|返还|获得|星能上限 \+/.test(text)) {
+        resolvedType = "reward";
+      }
+    }
+
+    const styles = {
+      info: { color: "#DCEBFF" },
+      reward: { color: "#FFD76A" },
+      warning: { color: "#FFB25C" },
+      danger: { color: "#FF6B6B" }
+    };
+
+    return styles[resolvedType] || styles.info;
+  }
+
+  showMessage(text, type = "info") {
+    const style = this.getMessageStyle(text, type);
     this.messageText.setText(text);
-    this.messageContainer.setVisible(true);
-    this.messageContainer.setActive(true);
-    this.messageContainer.setAlpha(1);
+    this.messageText.setColor(style.color);
+    this.messageText.setAlpha(0.86);
+    this.messageText.setWordWrapWidth?.(620, true);
 
     this.tweens.killTweensOf(this.messageContainer);
+    this.messageContainer.setVisible(true);
+    this.messageContainer.setActive(true);
+    this.messageContainer.setPosition?.(this.W / 2, this.H * 0.44 + 10);
+    this.messageContainer.setScale?.(0.96);
+    this.messageContainer.setAlpha(0);
+
+    this.tweens.add({
+      targets: this.messageContainer,
+      alpha: 1,
+      y: this.H * 0.44,
+      scale: 1,
+      duration: 160,
+      ease: "Sine.easeOut"
+    });
 
     this.tweens.add({
       targets: this.messageContainer,
       alpha: 0,
-      delay: 1100,
-      duration: 500,
+      delay: 1250,
+      duration: 380,
+      ease: "Sine.easeIn",
       onComplete: () => this.hideMessage()
     });
   }
@@ -3106,24 +4652,29 @@ class SceneDemo extends Phaser.Scene {
     this.messageContainer.setVisible(false);
     this.messageContainer.setActive(false);
     this.messageContainer.setAlpha(1);
+    this.messageContainer.setScale?.(1);
   }
 
   updateUI() {
-    const collectorCounts = this.getCollectorCounts();
+    const waveNumber = this.currentWaveIndex + 1;
 
-    this.energyText.setText(`星能：${Math.floor(this.starEnergy)} / ${this.maxStarEnergy}`);
-    this.hpText.setText(`星球生命：${this.planetHp} / 100`);
-    this.waveText.setText(this.getWaveText());
-    this.frontlineText.setText(
-      `${this.getFrontlineLabel()}采集器：当前 ${collectorCounts.current}  远端 ${collectorCounts.stored}  总计 ${collectorCounts.total}`
-    );
+    this.energyText.setText(`${Math.floor(this.starEnergy)} / ${this.maxStarEnergy}`);
+    this.hpText.setText(`${this.planetHp} / 100`);
+    this.waveText.setText(String(waveNumber));
+    this.frontlineText.setText(this.getHudNextWaveText());
     this.updateEnergyCapUpgradeButtonState();
 
     for (const card of this.cards) {
       if (this.starEnergy < card.data.cost && this.selectedCard?.id !== card.data.id) {
-        card.bg.setFillStyle(0x111827, 0.55);
+        card.bg.setFillStyle(UI_THEME.card.unavailableFill, 0.58);
+        card.title.setAlpha(0.62);
+        card.cost.setAlpha(0.62);
+        card.thumbnail?.setAlpha(0.52);
       } else if (this.selectedCard?.id !== card.data.id) {
-        card.bg.setFillStyle(0x0b1220, 0.98);
+        card.bg.setFillStyle(UI_THEME.card.fill, 0.94);
+        card.title.setAlpha(1);
+        card.cost.setAlpha(1);
+        card.thumbnail?.setAlpha(1);
       }
     }
   }
