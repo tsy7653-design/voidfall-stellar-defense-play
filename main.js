@@ -5,42 +5,128 @@ const ENERGY_CAP_UPGRADE_COST = 10;
 const ENERGY_CAP_UPGRADE_AMOUNT = 10;
 const ENERGY_CAP_MAX = 100;
 const CARD_DRAG_THRESHOLD = 10;
-const GAME_VERSION = "v0.9.5";
+const GAME_VERSION = "v0.10.0";
+const BASE_METEOR_DAMAGE = 18;
+const METEOR_DAMAGE_PER_LEVEL = 4;
+const METEOR_UPGRADE_BASE_COST = 10;
+const METEOR_UPGRADE_COST_STEP = 5;
+const METEOR_UPGRADE_MAX_COST = 90;
+const METEOR_UPGRADE_CLICK_GUARD_MS = 160;
 
 // 固定 UI 只提升视觉清晰度，不改变卡牌与按钮的交互尺寸。
 const UI_VISUAL_SCALE = {
-  cardThumbnail: 0.102,
-  meteorThumbnail: 0.108,
+  cardThumbnail: 0.108,
+  meteorThumbnail: 0.132,
   hudIcon: 0.112,
   energyUpgradeIcon: 0.072,
-  demolishIcon: 0.104
+  demolishIcon: 0.11
 };
 
 // UI 视觉规范：只统一布局、层级和颜色，不参与任何战斗或数值计算。
 const UI_THEME = {
   hud: {
-    panelFill: 0x061323,
-    panelAlpha: 0.68,
-    border: 0x1d9bf0,
-    label: "#9fb8d1",
-    value: "#f2f8ff"
+    backdropFill: 0x020713,
+    backdropAlpha: 0.38,
+    panelFill: 0x07172b,
+    panelAlternateFill: 0x0b1730,
+    panelAlpha: 0.9,
+    border: 0x24b9ee,
+    separator: 0x164464,
+    iconWell: 0x08223b,
+    label: "#a9c4dc",
+    value: "#f4f9ff",
+    muted: "#bfd1e4",
+    energy: "#ffd166",
+    healthy: "#68e7a2"
   },
   card: {
-    fill: 0x071525,
-    unavailableFill: 0x0d1625,
-    border: 0x34506f,
-    hoverBorder: 0x7dd3fc,
-    selectedBorder: 0x5ee7ff,
-    selectedFill: 0x102943
+    barFill: 0x020711,
+    tacticalFill: 0x130b2b,
+    fill: 0x061323,
+    headerFill: 0x0a2037,
+    imageFill: 0x07192d,
+    footerFill: 0x030d1a,
+    hoverFill: 0x0a2138,
+    hoverImageFill: 0x0b2944,
+    selectedImageFill: 0x0d304d,
+    unavailableFill: 0x080d17,
+    unavailableImageFill: 0x0a101a,
+    border: 0x315a78,
+    hoverBorder: 0x70dfff,
+    selectedBorder: 0x62e8ff,
+    selectedFill: 0x0d2a44,
+    meteorFill: 0x241006,
+    meteorImageFill: 0x321306,
+    meteorSelectedFill: 0x3a1807,
+    meteorSelectedImageFill: 0x4a1b06,
+    meteorBorder: 0xf59e0b,
+    meteorGlow: 0xfb923c,
+    title: "#e6f2ff",
+    meta: "#9eb6cc",
+    cost: "#ffd166",
+    unavailableCost: "#ff9b75"
   },
   panel: {
-    overlayAlpha: 0.76,
-    fill: 0x071426,
-    border: 0x38bdf8,
-    divider: 0x2563eb,
+    overlayAlpha: 0.78,
+    fill: 0x050b1b,
+    headerFill: 0x111a3a,
+    statsFill: 0x071e35,
+    border: 0x38c7f4,
+    divider: 0x2477a9,
     buttonFill: 0x0b4168,
-    buttonBorder: 0x67d7ff
+    buttonHoverFill: 0x115d86,
+    buttonBorder: 0x6ddcff,
+    secondaryFill: 0x2c1a4d,
+    secondaryHoverFill: 0x45246f,
+    secondaryBorder: 0xc4b5fd,
+    title: "#f4f9ff",
+    body: "#c7d7e8",
+    value: "#e6f4ff",
+    victory: "#ffd166",
+    danger: "#fb7185"
+  },
+  message: {
+    info: "#dceeff",
+    reward: "#ffd166",
+    warning: "#ffb25c",
+    danger: "#ff6b6b",
+    alpha: 0.88
+  },
+  type: {
+    hudLabel: "13px",
+    hudValue: "18px",
+    hudMeta: "13px",
+    cardTitle: "16px",
+    cardMeta: "14px",
+    message: "30px",
+    panelTitle: "30px",
+    panelBody: "17px",
+    panelValue: "19px",
+    button: "19px"
   }
+};
+
+const UI_LAYOUT = {
+  hud: {
+    x: 16,
+    width: 292,
+    rowHeight: 30,
+    rows: [23, 57, 91],
+    backdropHeight: 104
+  },
+  card: {
+    width: 150,
+    height: 100,
+    headerHeight: 22,
+    imageHeight: 54,
+    footerHeight: 22
+  },
+  rightHud: {
+    width: 78,
+    height: 104,
+    rightInset: 50
+  },
+  messageYRatio: 0.4
 };
 
 const BUILDING_VISUALS = {
@@ -115,6 +201,14 @@ class SceneDemo extends Phaser.Scene {
     return text;
   }
 
+  setTextIfChanged(textObject, value) {
+    if (!textObject) return false;
+    const nextValue = String(value);
+    if (textObject.text === nextValue) return false;
+    textObject.setText(nextValue);
+    return true;
+  }
+
   addToFrontline(item) {
     this.frontlineLayer.add(item);
     return item;
@@ -122,6 +216,44 @@ class SceneDemo extends Phaser.Scene {
 
   makeFrontlineText(x, y, content, style = {}) {
     return this.addToFrontline(this.makeText(x, y, content, style));
+  }
+
+  addSceneAmbientTween(config) {
+    const tween = this.tweens.add(config);
+    this.sceneAmbientTweens ??= [];
+    this.sceneAmbientTweens.push(tween);
+    return tween;
+  }
+
+  setManagedTweenPaused(tween, paused) {
+    if (!tween) return;
+    if (paused) tween.pause?.();
+    else tween.resume?.();
+  }
+
+  stopManagedTween(tween) {
+    if (!tween) return;
+    tween.stop?.();
+    tween.remove?.();
+  }
+
+  cleanupSceneAnimations() {
+    for (const tween of this.sceneAmbientTweens || []) this.stopManagedTween(tween);
+    this.sceneAmbientTweens = [];
+
+    for (const building of this.buildings || []) {
+      this.stopManagedTween(building.ambientTween);
+      this.stopManagedTween(building.feedbackTween);
+      building.ambientTween = null;
+      building.feedbackTween = null;
+    }
+
+    for (const shield of this.shields || []) {
+      this.stopManagedTween(shield.ambientTween);
+      shield.ambientTween = null;
+    }
+
+    this.clearSupplyVisuals();
   }
 
   preload() {
@@ -148,6 +280,47 @@ class SceneDemo extends Phaser.Scene {
         leaper: 0
       }
     };
+  }
+
+  resetMeteorProgress() {
+    this.baseMeteorDamage = BASE_METEOR_DAMAGE;
+    this.meteorLevel = 1;
+    this.meteorDamage = this.getMeteorDamage(this.meteorLevel);
+    this.meteorUpgradeBlockedUntil = 0;
+  }
+
+  getMeteorDamage(level = this.meteorLevel) {
+    const normalizedLevel = Math.max(1, Math.floor(level || 1));
+    return (this.baseMeteorDamage ?? BASE_METEOR_DAMAGE) + (normalizedLevel - 1) * METEOR_DAMAGE_PER_LEVEL;
+  }
+
+  getMeteorUpgradeCost(currentLevel = this.meteorLevel) {
+    const normalizedLevel = Math.max(1, Math.floor(currentLevel || 1));
+    return Math.min(
+      METEOR_UPGRADE_MAX_COST,
+      METEOR_UPGRADE_BASE_COST + (normalizedLevel - 1) * METEOR_UPGRADE_COST_STEP
+    );
+  }
+
+  upgradeMeteor() {
+    if (this.gameState !== "playing") return false;
+
+    const now = this.time?.now ?? Date.now();
+    if (now < (this.meteorUpgradeBlockedUntil || 0)) return false;
+
+    const cost = this.getMeteorUpgradeCost();
+    if (this.starEnergy < cost) {
+      this.showMessage("星能不足", "warning");
+      return false;
+    }
+
+    this.meteorUpgradeBlockedUntil = now + METEOR_UPGRADE_CLICK_GUARD_MS;
+    this.starEnergy -= cost;
+    this.meteorLevel++;
+    this.meteorDamage = this.getMeteorDamage(this.meteorLevel);
+    this.updateUI();
+    this.showMessage(`陨星打击 Lv${this.meteorLevel}`, "reward");
+    return true;
   }
 
   resetSupplyState() {
@@ -296,10 +469,22 @@ class SceneDemo extends Phaser.Scene {
     overlay.setInteractive();
     overlay.on("pointerdown", () => this.beginFixedUiInteraction());
 
-    const panel = this.add.rectangle(panelX, panelY, panelWidth, panelHeight, UI_THEME.panel.fill, 0.96);
-    panel.setStrokeStyle(1, UI_THEME.panel.border, 0.9);
+    const panel = this.add.rectangle(panelX, panelY, panelWidth, panelHeight, UI_THEME.panel.fill, 0.97);
+    panel.setStrokeStyle(1, UI_THEME.panel.border, 0.74);
     panel.setDepth(201);
-    const panelAccent = this.add.rectangle(panelX, panelTop + 8, panelWidth - 64, 2, isVictory ? 0xfacc15 : 0xfb7185, 0.72);
+    const panelHeaderBand = this.add.rectangle(panelX, panelTop + 44, panelWidth - 2, 72, UI_THEME.panel.headerFill, 0.58);
+    panelHeaderBand.setDepth(201);
+    const statsBand = this.add.rectangle(panelX, panelTop + 140, panelWidth - 72, 46, UI_THEME.panel.statsFill, 0.9);
+    statsBand.setStrokeStyle(1, UI_THEME.panel.divider, 0.34);
+    statsBand.setDepth(201);
+    const panelAccent = this.add.rectangle(
+      panelX,
+      panelTop + 8,
+      panelWidth - 72,
+      2,
+      isVictory ? UI_THEME.panel.victory : UI_THEME.panel.danger,
+      0.86
+    );
     panelAccent.setDepth(202);
 
     const addPanelText = (x, y, content, style) => {
@@ -309,8 +494,8 @@ class SceneDemo extends Phaser.Scene {
     };
 
     const title = addPanelText(panelX, panelTop + 28, isVictory ? "恭喜你成功守护晨曦星" : "晨曦星失守", {
-      fontSize: "30px",
-      color: isVictory ? "#facc15" : "#fb7185",
+      fontSize: UI_THEME.type.panelTitle,
+      color: isVictory ? UI_THEME.panel.victory : UI_THEME.panel.danger,
       fontStyle: "bold"
     });
     title.setOrigin(0.5, 0);
@@ -318,8 +503,8 @@ class SceneDemo extends Phaser.Scene {
     const subtitle = addPanelText(panelX, panelTop + 76, isVictory
       ? "虚空潮汐暂时退去，晨曦星迎来了新的黎明。"
       : "虚空潮汐突破了最后防线", {
-      fontSize: "17px",
-      color: "#cbd5e1"
+      fontSize: UI_THEME.type.panelBody,
+      color: UI_THEME.panel.body
     });
     subtitle.setOrigin(0.5, 0);
 
@@ -332,8 +517,8 @@ class SceneDemo extends Phaser.Scene {
       `击败怪物：${summary.totalKills}`
     ];
     const stats = addPanelText(panelX, panelTop + 122, statLines.join("   "), {
-      fontSize: "19px",
-      color: "#e0f2fe",
+      fontSize: UI_THEME.type.panelValue,
+      color: UI_THEME.panel.value,
       fontStyle: "bold"
     });
     stats.setOrigin(0.5, 0);
@@ -343,7 +528,7 @@ class SceneDemo extends Phaser.Scene {
 
     const defenseHeader = addPanelText(panelX - panelWidth / 2 + 38, panelTop + 190, "最终防线", {
       fontSize: "18px",
-      color: "#93c5fd",
+      color: "#8edfff",
       fontStyle: "bold"
     });
 
@@ -351,43 +536,49 @@ class SceneDemo extends Phaser.Scene {
       const emptyLine = addPanelText(panelX, panelTop + 224, isVictory
         ? "最终防线：防线虽已耗尽，但晨曦星成功获救"
         : "最终防线：已全数失守", {
-        fontSize: "17px",
-        color: "#cbd5e1"
+        fontSize: UI_THEME.type.panelBody,
+        color: UI_THEME.panel.body
       });
       emptyLine.setOrigin(0.5, 0);
     } else {
       defenseLines.forEach((line, index) => {
         addPanelText(panelX - panelWidth / 2 + 42, panelTop + 220 + index * 27, line, {
           fontSize: "16px",
-          color: "#dbeafe"
+          color: UI_THEME.panel.value
         });
       });
     }
 
-    const restartButton = this.add.rectangle(panelX, panelTop + panelHeight - 43, 250, 56, UI_THEME.panel.buttonFill, 0.96);
-    restartButton.setStrokeStyle(1, UI_THEME.panel.buttonBorder, 1);
+    const restartButton = this.add.rectangle(panelX, panelTop + panelHeight - 43, 250, 56, UI_THEME.panel.buttonFill, 0.98);
+    restartButton.setStrokeStyle(1, UI_THEME.panel.buttonBorder, 0.94);
     restartButton.setDepth(202);
     restartButton.setInteractive({ useHandCursor: true });
 
     const restartLabel = addPanelText(panelX, panelTop + panelHeight - 44, "再来一次", {
-      fontSize: "21px",
-      color: "#e0f2fe",
+      fontSize: UI_THEME.type.button,
+      color: UI_THEME.panel.value,
       fontStyle: "bold"
     });
     restartLabel.setOrigin(0.5, 0.5);
 
     restartButton.on("pointerover", () => {
-      if (!this.restartRequested) restartButton.setStrokeStyle(2, 0xe0f7ff, 1);
+      if (!this.restartRequested) {
+        restartButton.setFillStyle(UI_THEME.panel.buttonHoverFill, 1);
+        restartButton.setStrokeStyle(2, 0xe0f7ff, 1);
+      }
     });
     restartButton.on("pointerout", () => {
-      if (!this.restartRequested) restartButton.setStrokeStyle(1, UI_THEME.panel.buttonBorder, 1);
+      if (!this.restartRequested) {
+        restartButton.setFillStyle(UI_THEME.panel.buttonFill, 0.98);
+        restartButton.setStrokeStyle(1, UI_THEME.panel.buttonBorder, 0.94);
+      }
     });
     restartButton.on("pointerdown", () => {
       this.beginFixedUiInteraction();
       this.restartGame();
     });
 
-    const ui = { overlay, panel, panelAccent, restartButton, restartLabel, result };
+    const ui = { overlay, panel, panelHeaderBand, statsBand, panelAccent, restartButton, restartLabel, result };
     this.endScreenUi = ui;
     if (!isVictory) this.gameOverUi = ui;
     return true;
@@ -454,10 +645,15 @@ class SceneDemo extends Phaser.Scene {
     overlay.setInteractive();
     overlay.on("pointerdown", () => this.beginFixedUiInteraction());
 
-    const panel = track(this.add.rectangle(panelX, panelY, panelWidth, panelHeight, UI_THEME.panel.fill, 0.96));
-    panel.setStrokeStyle(1, UI_THEME.panel.border, 0.9);
+    const panel = track(this.add.rectangle(panelX, panelY, panelWidth, panelHeight, UI_THEME.panel.fill, 0.97));
+    panel.setStrokeStyle(1, UI_THEME.panel.border, 0.74);
     panel.setDepth(181);
-    const panelAccent = track(this.add.rectangle(panelX, panelTop + 8, panelWidth - 64, 2, 0xfacc15, 0.72));
+    const panelHeaderBand = track(this.add.rectangle(panelX, panelTop + 44, panelWidth - 2, 72, UI_THEME.panel.headerFill, 0.58));
+    panelHeaderBand.setDepth(181);
+    const statsBand = track(this.add.rectangle(panelX, panelTop + 168, panelWidth - 72, 46, UI_THEME.panel.statsFill, 0.9));
+    statsBand.setStrokeStyle(1, UI_THEME.panel.divider, 0.34);
+    statsBand.setDepth(181);
+    const panelAccent = track(this.add.rectangle(panelX, panelTop + 8, panelWidth - 72, 2, UI_THEME.panel.victory, 0.86));
     panelAccent.setDepth(182);
 
     const addPanelText = (x, y, content, style) => {
@@ -467,38 +663,46 @@ class SceneDemo extends Phaser.Scene {
     };
 
     const title = addPanelText(panelX, panelTop + 30, "阶段守护完成", {
-      fontSize: "30px",
-      color: "#facc15",
+      fontSize: UI_THEME.type.panelTitle,
+      color: UI_THEME.panel.victory,
       fontStyle: "bold"
     });
     title.setOrigin(0.5, 0);
 
     const copy = addPanelText(panelX, panelTop + 82, "晨曦星暂时恢复了平静。\n你可以结束本次守护，也可以继续迎战更强的虚空潮汐。", {
-      fontSize: "17px",
-      color: "#cbd5e1",
+      fontSize: UI_THEME.type.panelBody,
+      color: UI_THEME.panel.body,
       align: "center",
       lineSpacing: 8
     });
     copy.setOrigin(0.5, 0);
 
     const stats = addPanelText(panelX, panelTop + 156, `已完成波数：${completedWave}    当前击败怪物：${this.runStats.totalKills}`, {
-      fontSize: "19px",
-      color: "#e0f2fe",
+      fontSize: UI_THEME.type.panelValue,
+      color: UI_THEME.panel.value,
       fontStyle: "bold"
     });
     stats.setOrigin(0.5, 0);
 
-    const createButton = (x, color, borderColor, label, handler) => {
-      const button = track(this.add.rectangle(x, panelTop + panelHeight - 58, 220, 54, color, 0.96));
-      button.setStrokeStyle(1, borderColor, 1);
+    const createButton = (x, color, hoverColor, borderColor, label, handler) => {
+      const button = track(this.add.rectangle(x, panelTop + panelHeight - 58, 220, 54, color, 0.98));
+      button.setStrokeStyle(1, borderColor, 0.94);
       button.setDepth(182);
       button.setInteractive({ useHandCursor: true });
       const buttonLabel = addPanelText(x, panelTop + panelHeight - 59, label, {
-        fontSize: "19px",
-        color: "#f8fafc",
+        fontSize: UI_THEME.type.button,
+        color: UI_THEME.panel.value,
         fontStyle: "bold"
       });
       buttonLabel.setOrigin(0.5, 0.5);
+      button.on("pointerover", () => {
+        button.setFillStyle(hoverColor, 1);
+        button.setStrokeStyle(2, borderColor, 1);
+      });
+      button.on("pointerout", () => {
+        button.setFillStyle(color, 0.98);
+        button.setStrokeStyle(1, borderColor, 0.94);
+      });
       button.on("pointerdown", () => {
         this.beginFixedUiInteraction();
         handler();
@@ -506,8 +710,22 @@ class SceneDemo extends Phaser.Scene {
       return button;
     };
 
-    const continueButton = createButton(panelX - 122, UI_THEME.panel.buttonFill, UI_THEME.panel.buttonBorder, "继续守护", () => this.continueStageGuard());
-    const endButton = createButton(panelX + 122, 0x2e1b52, 0xc4b5fd, "结束本局", () => this.endRunFromStageChoice());
+    const continueButton = createButton(
+      panelX - 122,
+      UI_THEME.panel.buttonFill,
+      UI_THEME.panel.buttonHoverFill,
+      UI_THEME.panel.buttonBorder,
+      "继续守护",
+      () => this.continueStageGuard()
+    );
+    const endButton = createButton(
+      panelX + 122,
+      UI_THEME.panel.secondaryFill,
+      UI_THEME.panel.secondaryHoverFill,
+      UI_THEME.panel.secondaryBorder,
+      "结束本局",
+      () => this.endRunFromStageChoice()
+    );
     this.stageChoiceUi = { elements, overlay, panel, continueButton, endButton };
     this.updateUI();
     return true;
@@ -653,6 +871,7 @@ class SceneDemo extends Phaser.Scene {
     this.stageChoiceActive = false;
     this.destroyStageChoiceScreen();
     this.tweens.resumeAll?.();
+    this.syncWingAnimationState();
     this.gameState = "playing";
     this.advanceAfterCompletedWave(completedWave);
     this.updateUI();
@@ -688,6 +907,8 @@ class SceneDemo extends Phaser.Scene {
 
     this.W = this.scale.width;
     this.H = this.scale.height;
+    this.sceneAmbientTweens = [];
+    this.events?.once?.(Phaser.Scenes.Events.SHUTDOWN, () => this.cleanupSceneAnimations());
 
     // 星能系统
     this.starEnergy = 10;
@@ -798,7 +1019,7 @@ class SceneDemo extends Phaser.Scene {
     };
 
     this.meteorRange = 130;
-    this.meteorDamage = 18;
+    this.resetMeteorProgress();
     this.meteorPreviewOuter = null;
     this.meteorPreviewInner = null;
 
@@ -1032,7 +1253,7 @@ class SceneDemo extends Phaser.Scene {
       fontStyle: "bold"
     }));
 
-    this.tweens.add({
+    this.addSceneAmbientTween({
       targets: [planetGlow1, planetGlow2],
       scale: 1.12,
       alpha: 0.22,
@@ -1076,7 +1297,7 @@ class SceneDemo extends Phaser.Scene {
 
         const p = keepPortal(this.add.circle(px, py, Phaser.Math.FloatBetween(1.5, 3), 0xe879f9, 0.55));
 
-        this.tweens.add({
+        this.addSceneAmbientTween({
           targets: p,
           alpha: 0.1,
           scale: 1.6,
@@ -1086,14 +1307,14 @@ class SceneDemo extends Phaser.Scene {
         });
       }
 
-      this.tweens.add({
+      this.addSceneAmbientTween({
         targets: portalOuter,
         angle: 360,
         duration: 3200,
         repeat: -1
       });
 
-      this.tweens.add({
+      this.addSceneAmbientTween({
         targets: portalRing2,
         scale: 1.12,
         alpha: 0.52,
@@ -1109,7 +1330,7 @@ class SceneDemo extends Phaser.Scene {
     }));
 
     if (portalBody) {
-      this.tweens.add({
+      this.addSceneAmbientTween({
         targets: portalBody,
         angle: -360,
         duration: 12000,
@@ -1117,7 +1338,7 @@ class SceneDemo extends Phaser.Scene {
       });
     }
 
-    this.tweens.add({
+    this.addSceneAmbientTween({
       targets: portalGlow,
       scale: 1.16,
       alpha: 0.28,
@@ -1371,13 +1592,15 @@ class SceneDemo extends Phaser.Scene {
 
   createCards() {
     // 底部保留为一条统一操作栏，卡牌仍使用原有独立 hitArea 和拖拽入口。
-    this.cardBarBg = this.add.rectangle(this.W / 2, this.H - 60, this.W, 120, 0x020617, 0.78);
+    this.cardBarBg = this.add.rectangle(this.W / 2, this.H - 60, this.W, 120, UI_THEME.card.barFill, 0.94);
     this.cardBarBg.setDepth(88);
-    this.cardBarTop = this.add.rectangle(this.W / 2, this.H - 120, this.W, 2, 0x1d4f78, 0.72);
+    this.cardBarTacticalTint = this.add.rectangle(997, this.H - 60, 566, 116, UI_THEME.card.tacticalFill, 0.34);
+    this.cardBarTacticalTint.setDepth(88);
+    this.cardBarTop = this.add.rectangle(this.W / 2, this.H - 120, this.W, 3, UI_THEME.hud.border, 0.72);
     this.cardBarTop.setDepth(89);
-    this.cardBarGlow = this.add.rectangle(this.W / 2, this.H - 118, this.W, 1, 0x60d8ff, 0.24);
+    this.cardBarGlow = this.add.rectangle(this.W / 2, this.H - 117, this.W, 2, 0xa855f7, 0.22);
     this.cardBarGlow.setDepth(89);
-    this.cardBarDivider = this.add.rectangle(714, this.H - 60, 1, 82, 0x35506d, 0.5);
+    this.cardBarDivider = this.add.rectangle(714, this.H - 60, 2, 100, UI_THEME.card.border, 0.72);
     this.cardBarDivider.setDepth(89);
 
     this.cardData = [
@@ -1424,44 +1647,123 @@ class SceneDemo extends Phaser.Scene {
     ];
 
     const cardPositions = [112, 272, 432, 592, 846];
+    const cardAccentColors = {
+      collector: 0x34d399,
+      turret: 0x38bdf8,
+      laser: 0xfacc15,
+      shield: 0xa78bfa,
+      meteor: 0xf97316
+    };
 
     for (let i = 0; i < this.cardData.length; i++) {
       const data = this.cardData[i];
       const x = cardPositions[i];
       const y = this.H - 58;
+      const accentColor = cardAccentColors[data.id] || 0x38bdf8;
+      const isMeteorCard = data.id === "meteor";
 
-      const shadow = this.add.rectangle(x + 4, y + 5, 150, 100, 0x000000, 0.30);
+      const shadow = this.add.rectangle(
+        x + 4,
+        y + 5,
+        UI_LAYOUT.card.width,
+        UI_LAYOUT.card.height,
+        0x000000,
+        0.46
+      );
       shadow.setDepth(89);
 
-      const bg = this.add.rectangle(x, y, 150, 100, UI_THEME.card.fill, 0.94);
+      const bg = this.add.rectangle(x, y, UI_LAYOUT.card.width, UI_LAYOUT.card.height, UI_THEME.card.fill, 0.98);
       bg.setStrokeStyle(1, UI_THEME.card.border, 0.9);
       bg.setInteractive({ useHandCursor: true });
       bg.setDepth(90);
 
-      const accent = this.add.rectangle(x, y - 46, 138, 2, 0x38bdf8, 0.28);
-      accent.setDepth(91);
+      const headerBand = this.add.rectangle(x, y - 37, 138, UI_LAYOUT.card.headerHeight, UI_THEME.card.headerFill, 0.96);
+      headerBand.setDepth(91);
+      const imagePanel = this.add.rectangle(x, y + 1, 138, UI_LAYOUT.card.imageHeight, UI_THEME.card.imageFill, 0.96);
+      imagePanel.setDepth(91);
+      const footerBand = this.add.rectangle(x, y + 39, 138, UI_LAYOUT.card.footerHeight, UI_THEME.card.footerFill, 0.98);
+      footerBand.setDepth(91);
+      const imageGlow = this.add.circle(isMeteorCard ? x - 24 : x, y + 2, isMeteorCard ? 31 : 25, accentColor, 0.1);
+      imageGlow.setDepth(91);
+      const accent = this.add.rectangle(x, y - 48, 138, 3, accentColor, 0.72);
+      accent.setDepth(93);
 
       let thumbnail = null;
       if (this.hasTexture(data.texture)) {
-        thumbnail = this.add.image(x, y - 6, data.texture);
-        thumbnail.setScale(data.id === "meteor" ? UI_VISUAL_SCALE.meteorThumbnail : UI_VISUAL_SCALE.cardThumbnail);
+        thumbnail = this.add.image(isMeteorCard ? x - 24 : x, y + 1, data.texture);
+        thumbnail.setScale(isMeteorCard ? UI_VISUAL_SCALE.meteorThumbnail : UI_VISUAL_SCALE.cardThumbnail);
         thumbnail.setDepth(92);
       }
 
-      const title = this.makeText(x, y - 48, data.name, {
-        fontSize: "16px",
-        color: "#dbeafe",
-        fontStyle: "bold"
+      const title = this.makeHudText(isMeteorCard ? x - 17 : x, y - 37, data.name, {
+        fontSize: UI_THEME.type.cardTitle,
+        color: UI_THEME.card.title,
+        fontStyle: "bold",
+        shadow: {
+          offsetX: 0,
+          offsetY: 1,
+          color: "#020617",
+          blur: 3,
+          fill: true
+        }
       });
-      title.setOrigin(0.5, 0);
+      title.setOrigin(0.5, 0.5);
       title.setDepth(92);
 
-      const cost = this.makeText(x, y + 31, `星能 ${data.cost}`, {
-        fontSize: "14px",
-        color: "#facc15"
+      let costIcon = null;
+      if (this.hasTexture("icon_star_energy")) {
+        costIcon = this.add.image(x - 16, y + 39, "icon_star_energy");
+        costIcon.setScale(UI_VISUAL_SCALE.energyUpgradeIcon * 0.54);
+        costIcon.setDepth(92);
+      }
+
+      const cost = this.makeHudText(x + (costIcon ? 8 : 0), y + 39, costIcon ? String(data.cost) : `星能 ${data.cost}`, {
+        fontSize: UI_THEME.type.cardMeta,
+        color: UI_THEME.card.cost,
+        fontStyle: "bold"
       });
       cost.setOrigin(0.5, 0.5);
       cost.setDepth(92);
+
+      let levelBadge = null;
+      let upgradeButton = null;
+      let upgradeText = null;
+      if (isMeteorCard) {
+        levelBadge = this.makeHudText(x + 47, y - 37, "Lv1", {
+          fontSize: "12px",
+          color: "#fed7aa",
+          fontStyle: "bold"
+        });
+        levelBadge.setOrigin(0.5, 0.5);
+        levelBadge.setDepth(93);
+
+        upgradeButton = this.add.rectangle(x + 40, y + 10, 58, 26, 0x7c2d12, 0.96);
+        upgradeButton.setStrokeStyle(1, UI_THEME.card.meteorBorder, 0.9);
+        upgradeButton.setInteractive({ useHandCursor: true });
+        upgradeButton.setDepth(94);
+
+        upgradeText = this.makeHudText(x + 40, y + 10, "升级 10", {
+          fontSize: "12px",
+          color: "#ffedd5",
+          fontStyle: "bold"
+        });
+        upgradeText.setOrigin(0.5, 0.5);
+        upgradeText.setDepth(95);
+
+        upgradeButton.on("pointerover", () => {
+          if (this.starEnergy >= this.getMeteorUpgradeCost()) {
+            upgradeButton.setFillStyle(0xc2410c, 1);
+            upgradeButton.setStrokeStyle(2, 0xfde68a, 1);
+          }
+        });
+        upgradeButton.on("pointerout", () => this.updateMeteorCardUI(true));
+        upgradeButton.on("pointerdown", (pointer, localX, localY, event) => {
+          event?.stopPropagation?.();
+          this.beginFixedUiInteraction();
+          this.cancelCardDrag();
+          this.upgradeMeteor();
+        });
+      }
 
       const desc = this.makeText(x - 58, y + 35, data.desc, {
         fontSize: "12px",
@@ -1476,20 +1778,32 @@ class SceneDemo extends Phaser.Scene {
         cost,
         desc,
         thumbnail,
-        accent
+        accent,
+        accentColor,
+        costIcon,
+        headerBand,
+        imagePanel,
+        footerBand,
+        imageGlow,
+        levelBadge,
+        upgradeButton,
+        upgradeText
       };
 
       this.cards.push(card);
+      if (isMeteorCard) this.meteorCard = card;
+      this.applyCardVisualState(card, "normal");
 
       bg.on("pointerover", () => {
         if (this.selectedCard?.id !== data.id) {
-          bg.setStrokeStyle(2, UI_THEME.card.hoverBorder, 1);
+          this.applyCardVisualState(card, "hover");
         }
       });
 
       bg.on("pointerout", () => {
         if (this.selectedCard?.id !== data.id) {
           bg.setStrokeStyle(1, UI_THEME.card.border, 0.9);
+          this.updateUI();
         }
       });
 
@@ -1500,25 +1814,63 @@ class SceneDemo extends Phaser.Scene {
   }
 
   createUI() {
-    const hudX = 18;
-    const hudWidth = 210;
-    const hudRows = [34, 88, 142];
+    const hudX = UI_LAYOUT.hud.x;
+    const hudWidth = UI_LAYOUT.hud.width;
+    const hudRows = UI_LAYOUT.hud.rows;
 
-    this.statusBarBg = this.add.rectangle(hudX + hudWidth / 2, 88, hudWidth + 4, 160, 0x020617, 0.28);
+    this.statusBarBg = this.add.rectangle(
+      hudX + hudWidth / 2,
+      hudRows[1],
+      hudWidth + 4,
+      UI_LAYOUT.hud.backdropHeight,
+      UI_THEME.hud.backdropFill,
+      UI_THEME.hud.backdropAlpha
+    );
     this.statusBarBg.setDepth(90);
-    this.statusBarDivider = this.add.rectangle(hudX + 4, 88, 2, 150, UI_THEME.hud.border, 0.78);
+    this.statusBarDivider = this.add.rectangle(hudX + 2, hudRows[1], 2, 94, UI_THEME.hud.border, 0.82);
     this.statusBarDivider.setDepth(90);
-    this.hudPanels = hudRows.map((y) => {
-      const panel = this.add.rectangle(hudX + hudWidth / 2, y, hudWidth, 46, UI_THEME.hud.panelFill, UI_THEME.hud.panelAlpha);
-      panel.setStrokeStyle(1, UI_THEME.hud.border, 0.45);
+    this.statusBarTop = this.add.rectangle(hudX + hudWidth / 2, 5, hudWidth - 16, 2, 0xa855f7, 0.34);
+    this.statusBarTop.setDepth(90);
+    this.hudPanels = hudRows.map((y, index) => {
+      const fill = index === 1 ? UI_THEME.hud.panelAlternateFill : UI_THEME.hud.panelFill;
+      const panel = this.add.rectangle(
+        hudX + hudWidth / 2,
+        y,
+        hudWidth,
+        UI_LAYOUT.hud.rowHeight,
+        fill,
+        UI_THEME.hud.panelAlpha
+      );
+      panel.setStrokeStyle(1, UI_THEME.hud.border, 0.38);
       panel.setDepth(90);
       return panel;
     });
+    this.hudPanelAccents = hudRows.map((y) => {
+      const accent = this.add.rectangle(hudX + hudWidth - 3, y, 3, 18, UI_THEME.hud.border, 0.66);
+      accent.setDepth(91);
+      return accent;
+    });
+
+    const iconX = hudX + 20;
+    const hpIconX = hudX + 176;
+    const iconWells = [
+      [iconX, hudRows[0], 12],
+      [iconX, hudRows[1], 12],
+      [hpIconX, hudRows[1], 10],
+      [iconX, hudRows[2], 12]
+    ];
+    this.hudIconWells = iconWells.map(([x, y, radius]) => {
+      const well = this.add.circle(x, y, radius, UI_THEME.hud.iconWell, 0.9);
+      well.setStrokeStyle(1, UI_THEME.hud.border, 0.28);
+      well.setDepth(91);
+      return well;
+    });
 
     const statusIcons = [
-      ["icon_star_energy", 42, 34, UI_VISUAL_SCALE.hudIcon],
-      ["icon_wave", 42, 88, UI_VISUAL_SCALE.hudIcon],
-      ["icon_planet_hp", 150, 88, UI_VISUAL_SCALE.hudIcon * 0.72]
+      ["icon_star_energy", iconX, hudRows[0], UI_VISUAL_SCALE.hudIcon * 0.82],
+      ["icon_wave", iconX, hudRows[1], UI_VISUAL_SCALE.hudIcon * 0.82],
+      ["icon_planet_hp", hpIconX, hudRows[1], UI_VISUAL_SCALE.hudIcon * 0.58],
+      ["icon_wave", iconX, hudRows[2], UI_VISUAL_SCALE.hudIcon * 0.7]
     ];
     for (const [texture, x, y, scale] of statusIcons) {
       if (!this.hasTexture(texture)) continue;
@@ -1526,73 +1878,92 @@ class SceneDemo extends Phaser.Scene {
       icon.setDepth(91);
     }
 
-    this.energyLabel = this.makeHudText(66, 25, "星能", {
-      fontSize: "13px",
+    this.energyLabel = this.makeHudText(hudX + 40, hudRows[0], "星能", {
+      fontSize: UI_THEME.type.hudLabel,
       color: UI_THEME.hud.label,
       fontStyle: "bold"
     });
+    this.energyLabel.setOrigin(0, 0.5);
     this.energyLabel.setDepth(91);
 
-    this.waveLabel = this.makeHudText(66, 79, "波次", {
-      fontSize: "13px",
+    this.waveLabel = this.makeHudText(hudX + 40, hudRows[1], "波次", {
+      fontSize: UI_THEME.type.hudLabel,
       color: UI_THEME.hud.label,
       fontStyle: "bold"
     });
+    this.waveLabel.setOrigin(0, 0.5);
     this.waveLabel.setDepth(91);
 
-    this.frontlineLabel = this.makeHudText(40, 133, "下一波", {
-      fontSize: "13px",
+    this.frontlineLabel = this.makeHudText(hudX + 40, hudRows[2], "下一波", {
+      fontSize: UI_THEME.type.hudLabel,
       color: UI_THEME.hud.label,
       fontStyle: "bold"
     });
+    this.frontlineLabel.setOrigin(0, 0.5);
     this.frontlineLabel.setDepth(91);
 
-    this.energyText = this.makeHudText(151, 22, "", {
-      fontSize: "20px",
-      color: "#facc15",
+    this.energyText = this.makeHudText(hudX + 226, hudRows[0], "", {
+      fontSize: UI_THEME.type.hudValue,
+      color: UI_THEME.hud.energy,
       fontStyle: "bold"
     });
-    this.energyText.setOrigin(1, 0);
+    this.energyText.setOrigin(1, 0.5);
     this.energyText.setDepth(91);
 
-    this.hpText = this.makeHudText(214, 79, "", {
-      fontSize: "11px",
-      color: "#74f2a5",
+    this.hpText = this.makeHudText(hudX + 282, hudRows[1], "", {
+      fontSize: UI_THEME.type.hudMeta,
+      color: UI_THEME.hud.healthy,
       fontStyle: "bold"
     });
-    this.hpText.setOrigin(1, 0);
+    this.hpText.setOrigin(1, 0.5);
     this.hpText.setDepth(91);
 
-    this.waveText = this.makeHudText(128, 76, "", {
-      fontSize: "18px",
+    this.waveText = this.makeHudText(hudX + 136, hudRows[1], "", {
+      fontSize: UI_THEME.type.hudValue,
       color: UI_THEME.hud.value,
       fontStyle: "bold"
     });
-    this.waveText.setOrigin(1, 0);
+    this.waveText.setOrigin(1, 0.5);
     this.waveText.setDepth(91);
 
-    this.versionText = this.makeText(this.W - 22, 11, GAME_VERSION, {
-      fontSize: "13px",
-      color: "#bfd1e4"
+    const rightHudX = this.W - UI_LAYOUT.rightHud.rightInset;
+    this.rightHudBg = this.add.rectangle(
+      rightHudX,
+      56,
+      UI_LAYOUT.rightHud.width,
+      UI_LAYOUT.rightHud.height,
+      UI_THEME.hud.backdropFill,
+      0.76
+    );
+    this.rightHudBg.setStrokeStyle(1, UI_THEME.hud.border, 0.44);
+    this.rightHudBg.setDepth(90);
+    this.rightHudAccent = this.add.rectangle(rightHudX, 5, UI_LAYOUT.rightHud.width - 14, 2, 0xa855f7, 0.42);
+    this.rightHudAccent.setDepth(91);
+    this.rightHudDivider = this.add.rectangle(rightHudX, 34, UI_LAYOUT.rightHud.width - 16, 1, UI_THEME.hud.separator, 0.72);
+    this.rightHudDivider.setDepth(91);
+
+    this.versionText = this.makeHudText(rightHudX, 17, GAME_VERSION, {
+      fontSize: "12px",
+      color: UI_THEME.hud.muted
     });
-    this.versionText.setOrigin(1, 0);
-    this.versionText.setAlpha(0.7);
+    this.versionText.setOrigin(0.5, 0.5);
+    this.versionText.setAlpha(0.78);
     this.versionText.setDepth(91);
 
-    this.frontlineText = this.makeHudText(214, 130, "", {
-      fontSize: "16px",
+    this.frontlineText = this.makeHudText(hudX + 282, hudRows[2], "", {
+      fontSize: "14px",
       color: "#dcecff",
       fontStyle: "bold"
     });
-    this.frontlineText.setOrigin(1, 0);
+    this.frontlineText.setOrigin(1, 0.5);
     this.frontlineText.setDepth(91);
 
     this.createEnergyCapUpgradeButton();
     this.createSettingsButton();
 
     this.messageText = this.makeText(0, -1, "", {
-      fontSize: "32px",
-      color: "#DCEBFF",
+      fontSize: UI_THEME.type.message,
+      color: UI_THEME.message.info,
       fontStyle: "bold",
       align: "center",
       wordWrap: { width: 620, useAdvancedWrap: true },
@@ -1605,9 +1976,9 @@ class SceneDemo extends Phaser.Scene {
       }
     });
     this.messageText.setOrigin(0.5, 0.5);
-    this.messageText.setAlpha(0.86);
+    this.messageText.setAlpha(UI_THEME.message.alpha);
 
-    this.messageContainer = this.add.container(this.W / 2, this.H * 0.44, [this.messageText]);
+    this.messageContainer = this.add.container(this.W / 2, this.H * UI_LAYOUT.messageYRatio, [this.messageText]);
     this.messageContainer.setDepth(94);
     this.messageContainer.setVisible(false);
     this.messageContainer.setActive(false);
@@ -1618,23 +1989,23 @@ class SceneDemo extends Phaser.Scene {
   }
 
   createEnergyCapUpgradeButton() {
-    const x = 190;
-    const y = 34;
-    const bg = this.add.rectangle(x, y, 56, 34, 0x0b4168, 0.94);
-    bg.setStrokeStyle(1, 0x67d7ff, 0.92);
+    const x = UI_LAYOUT.hud.x + UI_LAYOUT.hud.width - 27;
+    const y = UI_LAYOUT.hud.rows[0];
+    const bg = this.add.rectangle(x, y, 52, 28, UI_THEME.panel.buttonFill, 0.98);
+    bg.setStrokeStyle(1, UI_THEME.panel.buttonBorder, 0.9);
     bg.setInteractive({ useHandCursor: true });
     bg.setDepth(92);
 
     if (this.hasTexture("icon_energy_upgrade")) {
-      const icon = this.add.image(x - 17, y, "icon_energy_upgrade");
-      icon.setScale(UI_VISUAL_SCALE.energyUpgradeIcon);
+      const icon = this.add.image(x - 13, y, "icon_energy_upgrade");
+      icon.setScale(UI_VISUAL_SCALE.energyUpgradeIcon * 0.82);
       icon.setDepth(93);
       this.energyCapUpgradeIcon = icon;
     }
 
-    const label = this.makeHudText(x + 12, y - 1, "", {
+    const label = this.makeHudText(x + 11, y - 1, "", {
       fontSize: "11px",
-      color: "#e0f2fe",
+      color: UI_THEME.panel.value,
       fontStyle: "bold"
     });
     label.setOrigin(0.5, 0.5);
@@ -1644,12 +2015,13 @@ class SceneDemo extends Phaser.Scene {
 
     bg.on("pointerover", () => {
       if (this.maxStarEnergy < ENERGY_CAP_MAX) {
-        bg.setStrokeStyle(3, 0x7dd3fc, 1);
+        bg.setFillStyle(UI_THEME.panel.buttonHoverFill, 1);
+        bg.setStrokeStyle(2, UI_THEME.card.hoverBorder, 1);
       }
     });
 
     bg.on("pointerout", () => {
-      this.updateEnergyCapUpgradeButtonState();
+      this.updateEnergyCapUpgradeButtonState(true);
     });
 
     bg.on("pointerdown", () => {
@@ -1661,24 +2033,45 @@ class SceneDemo extends Phaser.Scene {
   }
 
   createSettingsButton() {
-    const x = this.W - 46;
-    const y = 65;
-    const bg = this.add.rectangle(x, y, 46, 46, UI_THEME.hud.panelFill, 0.78);
-    bg.setStrokeStyle(1, UI_THEME.hud.border, 0.62);
+    const x = this.W - UI_LAYOUT.rightHud.rightInset;
+    const y = 69;
+    const bg = this.add.rectangle(x, y, 54, 58, UI_THEME.hud.panelAlternateFill, 0.96);
+    bg.setStrokeStyle(1, UI_THEME.hud.border, 0.54);
     bg.setDepth(91);
     bg.setInteractive({ useHandCursor: true });
 
-    const icon = this.makeText(x, y - 1, "⚙", {
-      fontSize: "27px",
+    const icon = this.makeText(x, y - 9, "⚙", {
+      fontSize: "24px",
       color: "#dcecff",
       fontStyle: "bold"
     });
     icon.setOrigin(0.5, 0.5);
     icon.setDepth(92);
 
+    const label = this.makeHudText(x, y + 18, "设置", {
+      fontSize: "11px",
+      color: UI_THEME.hud.label,
+      fontStyle: "bold"
+    });
+    label.setOrigin(0.5, 0.5);
+    label.setDepth(92);
+
+    bg.on("pointerover", () => {
+      bg.setFillStyle(UI_THEME.card.hoverFill, 0.96);
+      bg.setStrokeStyle(2, UI_THEME.card.hoverBorder, 0.96);
+      icon.setColor("#ffffff");
+      label.setColor("#ffffff");
+    });
+    bg.on("pointerout", () => {
+      bg.setFillStyle(UI_THEME.hud.panelAlternateFill, 0.96);
+      bg.setStrokeStyle(1, UI_THEME.hud.border, 0.54);
+      icon.setColor("#dcecff");
+      label.setColor(UI_THEME.hud.label);
+    });
+
     // 设置暂不引入新玩法；此处只拦截固定 UI 点击，避免误触战场。
     bg.on("pointerdown", () => this.beginFixedUiInteraction());
-    this.settingsButton = { bg, icon };
+    this.settingsButton = { bg, icon, label };
   }
 
   buyEnergyCapUpgrade() {
@@ -1709,68 +2102,98 @@ class SceneDemo extends Phaser.Scene {
     return true;
   }
 
-  updateEnergyCapUpgradeButtonState() {
+  updateEnergyCapUpgradeButtonState(force = false) {
     if (!this.energyCapUpgradeButton) return;
 
     const { bg, label } = this.energyCapUpgradeButton;
     const isFull = this.maxStarEnergy >= ENERGY_CAP_MAX;
+    const stateKey = isFull ? "full" : "available";
+    if (!force && this.energyCapUpgradeButton.stateKey === stateKey) return;
+    this.energyCapUpgradeButton.stateKey = stateKey;
 
     if (isFull) {
       bg.setFillStyle(0x111827, 0.72);
       bg.setStrokeStyle(1, 0x475569, 0.65);
-      label.setText("已满");
+      this.setTextIfChanged(label, "已满");
       label.setColor("#94a3b8");
       this.energyCapUpgradeButton.icon?.setVisible(false);
       return;
     }
 
-    bg.setFillStyle(0x0b4168, 0.94);
-    bg.setStrokeStyle(1, 0x67d7ff, 0.92);
-    label.setText(`+${ENERGY_CAP_UPGRADE_AMOUNT}`);
-    label.setColor("#e0f2fe");
+    bg.setFillStyle(UI_THEME.panel.buttonFill, 0.96);
+    bg.setStrokeStyle(1, UI_THEME.panel.buttonBorder, 0.9);
+    this.setTextIfChanged(label, `+${ENERGY_CAP_UPGRADE_AMOUNT}`);
+    label.setColor(UI_THEME.panel.value);
     this.energyCapUpgradeButton.icon?.setVisible(true);
   }
 
   createDemolishButton() {
     const x = 1034;
     const y = this.H - 58;
-    const shadow = this.add.rectangle(x + 4, y + 5, 150, 100, 0x000000, 0.30);
+    const shadow = this.add.rectangle(
+      x + 4,
+      y + 5,
+      UI_LAYOUT.card.width,
+      UI_LAYOUT.card.height,
+      0x000000,
+      0.46
+    );
     shadow.setDepth(89);
-    const bg = this.add.rectangle(x, y, 150, 100, UI_THEME.card.fill, 0.94);
+    const bg = this.add.rectangle(x, y, UI_LAYOUT.card.width, UI_LAYOUT.card.height, UI_THEME.card.fill, 0.98);
     bg.setStrokeStyle(1, UI_THEME.card.border, 0.9);
     bg.setInteractive({ useHandCursor: true });
     bg.setDepth(90);
 
-    const accent = this.add.rectangle(x, y - 46, 138, 2, 0xfb7185, 0.28);
-    accent.setDepth(91);
+    const headerBand = this.add.rectangle(x, y - 37, 138, UI_LAYOUT.card.headerHeight, 0x281125, 0.94);
+    headerBand.setDepth(91);
+    const imagePanel = this.add.rectangle(x, y + 1, 138, UI_LAYOUT.card.imageHeight, 0x160d1d, 0.96);
+    imagePanel.setDepth(91);
+    const footerBand = this.add.rectangle(x, y + 39, 138, UI_LAYOUT.card.footerHeight, UI_THEME.card.footerFill, 0.98);
+    footerBand.setDepth(91);
+    const imageGlow = this.add.circle(x, y + 2, 25, 0xfb7185, 0.1);
+    imageGlow.setDepth(91);
+    const accent = this.add.rectangle(x, y - 48, 138, 3, 0xfb7185, 0.72);
+    accent.setDepth(93);
 
     let icon = null;
     if (this.hasTexture("icon_demolish")) {
-      icon = this.add.image(x, y - 6, "icon_demolish");
+      icon = this.add.image(x, y + 1, "icon_demolish");
       icon.setScale(UI_VISUAL_SCALE.demolishIcon);
       icon.setDepth(92);
     }
 
-    const label = this.makeText(x, y - 48, "拆除", {
-      fontSize: "16px",
-      color: "#e2e8f0",
-      fontStyle: "bold"
+    const label = this.makeHudText(x, y - 37, "拆除", {
+      fontSize: UI_THEME.type.cardTitle,
+      color: UI_THEME.card.title,
+      fontStyle: "bold",
+      shadow: {
+        offsetX: 0,
+        offsetY: 1,
+        color: "#020617",
+        blur: 3,
+        fill: true
+      }
     });
-    label.setOrigin(0.5, 0);
+    label.setOrigin(0.5, 0.5);
     label.setDepth(92);
 
-    const kind = this.makeText(x, y + 31, "功能", {
-      fontSize: "14px",
-      color: "#9fb8d1"
+    const kind = this.makeHudText(x, y + 39, "功能", {
+      fontSize: UI_THEME.type.cardMeta,
+      color: UI_THEME.card.meta
     });
     kind.setOrigin(0.5, 0.5);
     kind.setDepth(92);
 
-    this.demolishButton = { bg, label, icon, kind, accent };
+    this.demolishButton = { bg, label, icon, kind, accent, headerBand, imagePanel, footerBand, imageGlow };
 
     bg.on("pointerover", () => {
       if (!this.demolishMode) {
+        bg.setFillStyle(UI_THEME.card.hoverFill, 0.98);
         bg.setStrokeStyle(2, 0xfb7185, 1);
+        headerBand.setFillStyle(0xfb7185, 0.16);
+        imagePanel.setFillStyle(0x2b1227, 0.98);
+        imageGlow.setFillStyle(0xfb7185, 0.18);
+        accent.setFillStyle(0xfb7185, 0.9);
       }
     });
 
@@ -1903,13 +2326,7 @@ class SceneDemo extends Phaser.Scene {
             building.collectTextColor
           );
 
-          this.tweens.add({
-            targets: building.core ? [building.glow, building.core] : building.buildingGlow,
-            scale: 1.18,
-            alpha: 0.22,
-            duration: 130,
-            yoyo: true
-          });
+          this.pulseBuildingVisual(building, 1.18, 130);
         }
       }
     }
@@ -2214,13 +2631,9 @@ class SceneDemo extends Phaser.Scene {
   }
 
   addStarEnergy(amount) {
-    this.starEnergy += Math.floor(amount);
-
-    if (this.starEnergy > this.maxStarEnergy) {
-      this.starEnergy = this.maxStarEnergy;
-    }
-
-    this.updateUI();
+    const previousEnergy = this.starEnergy;
+    this.starEnergy = Math.min(this.maxStarEnergy, this.starEnergy + Math.floor(amount));
+    if (this.starEnergy !== previousEnergy) this.updateUI();
   }
 
   floatText(x, y, content, color = "#ffffff") {
@@ -2293,13 +2706,97 @@ class SceneDemo extends Phaser.Scene {
     this.meteorPreviewInner.setPosition(pointer.x, pointer.y);
   }
 
+  updateMeteorCardUI(force = false) {
+    const card = this.meteorCard || this.cards?.find((item) => item.data.id === "meteor");
+    if (!card) return;
+
+    const upgradeCost = this.getMeteorUpgradeCost();
+    const canUpgrade = this.gameState === "playing" && this.starEnergy >= upgradeCost;
+    const stateKey = `${this.meteorLevel}|${upgradeCost}|${canUpgrade}`;
+    if (!force && card.meteorUiState === stateKey) return;
+    card.meteorUiState = stateKey;
+    this.setTextIfChanged(card.levelBadge, `Lv${this.meteorLevel}`);
+    this.setTextIfChanged(card.upgradeText, `升级 ${upgradeCost}`);
+    card.upgradeButton?.setFillStyle(canUpgrade ? 0x7c2d12 : 0x2b1410, canUpgrade ? 0.96 : 0.88);
+    card.upgradeButton?.setStrokeStyle(1, canUpgrade ? UI_THEME.card.meteorBorder : 0x6b3a2d, canUpgrade ? 0.9 : 0.5);
+    card.upgradeText?.setColor(canUpgrade ? "#ffedd5" : "#9f7668");
+    card.upgradeText?.setAlpha(canUpgrade ? 1 : 0.72);
+  }
+
+  applyCardVisualState(card, state = "normal", force = false) {
+    if (!card) return;
+    if (!force && card.visualState === state) return;
+    card.visualState = state;
+
+    const accentColor = card.accentColor || 0x38bdf8;
+    const isMeteorCard = card.data?.id === "meteor";
+    const setContent = (titleAlpha, costAlpha, iconAlpha, thumbnailAlpha) => {
+      card.title?.setAlpha(titleAlpha);
+      card.cost?.setAlpha(costAlpha);
+      card.costIcon?.setAlpha(iconAlpha);
+      card.thumbnail?.setAlpha(thumbnailAlpha);
+      card.levelBadge?.setAlpha(titleAlpha);
+    };
+
+    if (state === "selected") {
+      card.bg.setFillStyle(isMeteorCard ? UI_THEME.card.meteorSelectedFill : UI_THEME.card.selectedFill, 1);
+      card.bg.setStrokeStyle(2, isMeteorCard ? UI_THEME.card.meteorBorder : UI_THEME.card.selectedBorder, 1);
+      card.headerBand?.setFillStyle(accentColor, 0.22);
+      card.imagePanel?.setFillStyle(isMeteorCard ? UI_THEME.card.meteorSelectedImageFill : UI_THEME.card.selectedImageFill, 0.98);
+      card.footerBand?.setFillStyle(isMeteorCard ? 0x241006 : 0x071a2b, 0.98);
+      card.accent?.setFillStyle(accentColor, 1);
+      card.imageGlow?.setFillStyle(isMeteorCard ? UI_THEME.card.meteorGlow : accentColor, isMeteorCard ? 0.32 : 0.22);
+      card.title?.setColor(UI_THEME.card.title);
+      card.cost?.setColor(UI_THEME.card.cost);
+      setContent(1, 1, 1, 1);
+      return;
+    }
+
+    if (state === "hover") {
+      card.bg.setFillStyle(isMeteorCard ? UI_THEME.card.meteorFill : UI_THEME.card.hoverFill, 0.98);
+      card.bg.setStrokeStyle(2, isMeteorCard ? UI_THEME.card.meteorBorder : UI_THEME.card.hoverBorder, 1);
+      card.headerBand?.setFillStyle(accentColor, 0.16);
+      card.imagePanel?.setFillStyle(isMeteorCard ? UI_THEME.card.meteorImageFill : UI_THEME.card.hoverImageFill, 0.98);
+      card.footerBand?.setFillStyle(isMeteorCard ? 0x1d0d05 : 0x061523, 0.98);
+      card.accent?.setFillStyle(accentColor, 0.88);
+      card.imageGlow?.setFillStyle(accentColor, 0.17);
+      card.title?.setColor(UI_THEME.card.title);
+      card.cost?.setColor(UI_THEME.card.cost);
+      setContent(1, 1, 1, 1);
+      return;
+    }
+
+    if (state === "unavailable") {
+      card.bg.setFillStyle(UI_THEME.card.unavailableFill, 0.92);
+      card.bg.setStrokeStyle(1, UI_THEME.card.border, 0.42);
+      card.headerBand?.setFillStyle(UI_THEME.card.unavailableFill, 0.98);
+      card.imagePanel?.setFillStyle(UI_THEME.card.unavailableImageFill, 0.94);
+      card.footerBand?.setFillStyle(0x050912, 0.98);
+      card.accent?.setFillStyle(accentColor, 0.12);
+      card.imageGlow?.setFillStyle(accentColor, 0.02);
+      card.title?.setColor(UI_THEME.card.meta);
+      card.cost?.setColor(UI_THEME.card.unavailableCost);
+      setContent(0.46, 0.72, 0.46, 0.32);
+      return;
+    }
+
+    card.bg.setFillStyle(isMeteorCard ? UI_THEME.card.meteorFill : UI_THEME.card.fill, 0.98);
+    card.bg.setStrokeStyle(1, isMeteorCard ? UI_THEME.card.meteorBorder : UI_THEME.card.border, isMeteorCard ? 0.72 : 0.9);
+    card.headerBand?.setFillStyle(isMeteorCard ? 0x321407 : UI_THEME.card.headerFill, 0.96);
+    card.imagePanel?.setFillStyle(isMeteorCard ? UI_THEME.card.meteorImageFill : UI_THEME.card.imageFill, 0.96);
+    card.footerBand?.setFillStyle(isMeteorCard ? 0x180b05 : UI_THEME.card.footerFill, 0.98);
+    card.accent?.setFillStyle(accentColor, 0.72);
+    card.imageGlow?.setFillStyle(isMeteorCard ? UI_THEME.card.meteorGlow : accentColor, isMeteorCard ? 0.16 : 0.1);
+    card.title?.setColor(UI_THEME.card.title);
+    card.cost?.setColor(UI_THEME.card.cost);
+    setContent(1, 1, 1, 1);
+  }
+
   clearCardSelection() {
     this.selectedCard = null;
 
     for (const card of this.cards) {
-      card.bg.setStrokeStyle(1, UI_THEME.card.border, 0.9);
-      card.bg.setFillStyle(UI_THEME.card.fill, 0.94);
-      card.accent?.setFillStyle(0x38bdf8, 0.28);
+      this.applyCardVisualState(card, this.starEnergy < card.data.cost ? "unavailable" : "normal");
     }
   }
 
@@ -2337,24 +2834,36 @@ class SceneDemo extends Phaser.Scene {
   updateDemolishButtonState() {
     if (!this.demolishButton) return;
 
-    const { bg, label } = this.demolishButton;
+    const { bg, label, headerBand, imagePanel, footerBand, imageGlow, accent, icon, kind } = this.demolishButton;
 
     if (this.demolishMode) {
       bg.setFillStyle(0x3f0d1d, 1);
-      bg.setStrokeStyle(3, 0xfb7185, 1);
+      bg.setStrokeStyle(2, 0xfb7185, 1);
+      headerBand?.setFillStyle(0xfb7185, 0.24);
+      imagePanel?.setFillStyle(0x351126, 1);
+      footerBand?.setFillStyle(0x260b18, 1);
+      imageGlow?.setFillStyle(0xfb7185, 0.24);
       label.setText("拆除中");
       label.setColor("#fecdd3");
-      this.demolishButton.kind?.setText("点击目标");
-      this.demolishButton.accent?.setFillStyle(0xfb7185, 0.8);
+      kind?.setText("点击目标");
+      kind?.setColor("#fecdd3");
+      icon?.setAlpha(1);
+      accent?.setFillStyle(0xfb7185, 1);
       return;
     }
 
-    bg.setFillStyle(UI_THEME.card.fill, 0.94);
+    bg.setFillStyle(UI_THEME.card.fill, 0.98);
     bg.setStrokeStyle(1, UI_THEME.card.border, 0.9);
+    headerBand?.setFillStyle(0x281125, 0.94);
+    imagePanel?.setFillStyle(0x160d1d, 0.96);
+    footerBand?.setFillStyle(UI_THEME.card.footerFill, 0.98);
+    imageGlow?.setFillStyle(0xfb7185, 0.1);
     label.setText("拆除");
-    label.setColor("#e2e8f0");
-    this.demolishButton.kind?.setText("功能");
-    this.demolishButton.accent?.setFillStyle(0xfb7185, 0.28);
+    label.setColor(UI_THEME.card.title);
+    kind?.setText("功能");
+    kind?.setColor(UI_THEME.card.meta);
+    icon?.setAlpha(1);
+    accent?.setFillStyle(0xfb7185, 0.72);
   }
 
   beginCardDragCandidate(card, pointer) {
@@ -2644,20 +3153,10 @@ class SceneDemo extends Phaser.Scene {
     this.selectedCard = cardData;
 
     for (const card of this.cards) {
-      if (card.data.id === cardData.id) {
-        card.bg.setStrokeStyle(2, UI_THEME.card.selectedBorder, 1);
-        card.bg.setFillStyle(UI_THEME.card.selectedFill, 1);
-        card.accent?.setFillStyle(0x7fe7ff, 0.95);
-        card.title.setAlpha(1);
-        card.cost.setAlpha(1);
-        card.thumbnail?.setAlpha(1);
-      } else {
-        card.bg.setStrokeStyle(1, UI_THEME.card.border, 0.9);
-        card.bg.setFillStyle(UI_THEME.card.fill, 0.94);
-        card.accent?.setFillStyle(0x38bdf8, 0.28);
-      }
+      this.applyCardVisualState(card, card.data.id === cardData.id ? "selected" : "normal");
     }
 
+    this.updateUI();
     this.showMessage(`已选：${cardData.name}`);
 
     this.updateMeteorPreview(this.input.activePointer);
@@ -2894,7 +3393,9 @@ class SceneDemo extends Phaser.Scene {
       attackRange,
       attackTimer: 0,
       defenseLevel: 0,
-      facingDirection
+      facingDirection,
+      ambientTween: null,
+      feedbackTween: null
     };
 
     if (card.id === "collector") {
@@ -2911,14 +3412,7 @@ class SceneDemo extends Phaser.Scene {
     this.buildings.push(building);
     this.registerBuildingInWing(building);
 
-    this.tweens.add({
-      targets: core ? [buildingGlow, core] : buildingGlow,
-      scale: 1.08,
-      alpha: 0.20,
-      duration: 1200,
-      yoyo: true,
-      repeat: -1
-    });
+    this.createBuildingAmbientTween(building);
 
     this.showMessage(`${card.name} 已部署`);
   }
@@ -2996,14 +3490,6 @@ class SceneDemo extends Phaser.Scene {
     });
     shieldText.setOrigin(0.5, 0);
 
-    this.tweens.add({
-      targets: shieldUsesTexture ? slot.line : [slot.line, shieldCore],
-      alpha: 0.35,
-      duration: 650,
-      yoyo: true,
-      repeat: -1
-    });
-
     const shield = {
       targetType: "shield",
       wing: this.activeWing,
@@ -3020,7 +3506,8 @@ class SceneDemo extends Phaser.Scene {
       shieldLevel: 0,
       currentHp: 0,
       maxHp: 0,
-      destroyed: false
+      destroyed: false,
+      ambientTween: null
     };
 
     this.applyShieldLevel(shield, 1, true);
@@ -3028,6 +3515,7 @@ class SceneDemo extends Phaser.Scene {
     slot.shield = shield;
     this.shields.push(shield);
     this.registerShieldInWing(shield);
+    this.createShieldAmbientTween(shield);
 
     this.showMessage("护盾已展开");
     this.updateUI();
@@ -3120,7 +3608,7 @@ class SceneDemo extends Phaser.Scene {
         this.startWave();
       }
 
-      this.updateUI();
+      this.updateHudValues();
       return;
     }
 
@@ -3149,7 +3637,7 @@ class SceneDemo extends Phaser.Scene {
       this.processCompletedWave(completedWave);
     }
 
-    this.updateUI();
+    this.updateHudValues();
   }
 
   startWave() {
@@ -3555,6 +4043,72 @@ class SceneDemo extends Phaser.Scene {
     object.setActive?.(visible);
   }
 
+  createBuildingAmbientTween(building) {
+    if (!building?.buildingGlow) return null;
+
+    this.stopManagedTween(building.ambientTween);
+    building.buildingGlow.setScale?.(1);
+    building.buildingGlow.setAlpha?.(0.12);
+    building.ambientTween = this.tweens.add({
+      targets: building.buildingGlow,
+      alpha: 0.20,
+      duration: 1200,
+      yoyo: true,
+      repeat: -1
+    });
+    return building.ambientTween;
+  }
+
+  pulseBuildingVisual(building, targetScale = 1.18, duration = 130) {
+    const glow = building?.buildingGlow;
+    if (!glow || building.destroyed || building.wing !== this.activeWing || glow.visible === false) return null;
+
+    this.stopManagedTween(building.feedbackTween);
+    glow.setScale?.(1);
+    let feedbackTween = null;
+    feedbackTween = this.tweens.add({
+      targets: glow,
+      scale: targetScale,
+      duration,
+      yoyo: true,
+      onComplete: () => {
+        glow.setScale?.(1);
+        if (building.feedbackTween === feedbackTween) building.feedbackTween = null;
+      }
+    });
+    building.feedbackTween = feedbackTween;
+    return feedbackTween;
+  }
+
+  createShieldAmbientTween(shield) {
+    if (!shield?.shieldCore) return null;
+
+    this.stopManagedTween(shield.ambientTween);
+    const baseAlpha = shield.usesTexture ? 1 : 0.38;
+    shield.shieldCore.setAlpha?.(baseAlpha);
+    shield.ambientTween = this.tweens.add({
+      targets: shield.shieldCore,
+      alpha: shield.usesTexture ? 0.72 : 0.28,
+      duration: 900,
+      yoyo: true,
+      repeat: -1
+    });
+    return shield.ambientTween;
+  }
+
+  syncWingAnimationState() {
+    for (const building of this.buildings || []) {
+      const shouldPause = building.destroyed || building.wing !== this.activeWing;
+      this.setManagedTweenPaused(building.ambientTween, shouldPause);
+      this.setManagedTweenPaused(building.feedbackTween, shouldPause);
+    }
+
+    for (const shield of this.shields || []) {
+      const shouldPause = shield.destroyed || shield.wing !== this.activeWing;
+      this.setManagedTweenPaused(shield.ambientTween, shouldPause);
+    }
+  }
+
   setBuildingWingVisibility(building, visible) {
     if (!building) return;
 
@@ -3570,6 +4124,9 @@ class SceneDemo extends Phaser.Scene {
       this.setWingObjectVisible(object, visible);
     }
 
+    this.setManagedTweenPaused(building.ambientTween, !visible);
+    this.setManagedTweenPaused(building.feedbackTween, !visible);
+
     if (visible && this.isDirectionalBuildingVisual(building.id)) {
       this.applyWingFacing(building.body, building.frontlineId, "building");
     }
@@ -3581,6 +4138,7 @@ class SceneDemo extends Phaser.Scene {
     for (const object of [shield.shieldCore, shield.healthBarBg, shield.healthBarFill, shield.text]) {
       this.setWingObjectVisible(object, visible);
     }
+    this.setManagedTweenPaused(shield.ambientTween, !visible);
   }
 
   detachActiveWingState() {
@@ -3591,7 +4149,6 @@ class SceneDemo extends Phaser.Scene {
     }
     for (const shield of state.shields) {
       this.setShieldWingVisibility(shield, false);
-      this.tweens.killTweensOf?.([shield.slot?.line, shield.shieldCore]);
     }
 
     for (const row of this.gridCells) {
@@ -3830,7 +4387,11 @@ class SceneDemo extends Phaser.Scene {
       this.buildings.splice(index, 1);
     }
 
-    this.tweens.killTweensOf([building.glow, building.body]);
+    this.stopManagedTween(building.ambientTween);
+    this.stopManagedTween(building.feedbackTween);
+    building.ambientTween = null;
+    building.feedbackTween = null;
+    this.tweens.killTweensOf([building.glow, building.body, building.core].filter(Boolean));
 
     building.glow.destroy();
     building.body.destroy();
@@ -4335,12 +4896,7 @@ class SceneDemo extends Phaser.Scene {
       life: 1.6
     });
 
-    this.tweens.add({
-      targets: building.core || building.buildingGlow,
-      scale: 1.55,
-      duration: 80,
-      yoyo: true
-    });
+    this.pulseBuildingVisual(building, 1.3, 80);
   }
 
   fireLaserBeam(building, target) {
@@ -4362,12 +4918,7 @@ class SceneDemo extends Phaser.Scene {
       onComplete: () => shot.destroy()
     });
 
-    this.tweens.add({
-      targets: building.core || building.buildingGlow,
-      scale: 1.55,
-      duration: 80,
-      yoyo: true
-    });
+    this.pulseBuildingVisual(building, 1.3, 80);
 
     this.damageEnemy(target, building.attackDamage);
   }
@@ -4516,7 +5067,9 @@ class SceneDemo extends Phaser.Scene {
     const stateIndex = state.shields.indexOf(shield);
     if (stateIndex !== -1) state.shields.splice(stateIndex, 1);
 
-    this.tweens.killTweensOf([shield.slot.line, shield.shieldCore]);
+    this.stopManagedTween(shield.ambientTween);
+    shield.ambientTween = null;
+    this.tweens.killTweensOf(shield.shieldCore);
 
     shield.slot.line.setAlpha(1);
     shield.slot.line.setFillStyle(0x60a5fa, 0.13);
@@ -4606,10 +5159,10 @@ class SceneDemo extends Phaser.Scene {
     }
 
     const styles = {
-      info: { color: "#DCEBFF" },
-      reward: { color: "#FFD76A" },
-      warning: { color: "#FFB25C" },
-      danger: { color: "#FF6B6B" }
+      info: { color: UI_THEME.message.info, alpha: 0.84 },
+      reward: { color: UI_THEME.message.reward, alpha: 0.92 },
+      warning: { color: UI_THEME.message.warning, alpha: 0.88 },
+      danger: { color: UI_THEME.message.danger, alpha: 0.9 }
     };
 
     return styles[resolvedType] || styles.info;
@@ -4619,20 +5172,20 @@ class SceneDemo extends Phaser.Scene {
     const style = this.getMessageStyle(text, type);
     this.messageText.setText(text);
     this.messageText.setColor(style.color);
-    this.messageText.setAlpha(0.86);
+    this.messageText.setAlpha(style.alpha ?? UI_THEME.message.alpha);
     this.messageText.setWordWrapWidth?.(620, true);
 
     this.tweens.killTweensOf(this.messageContainer);
     this.messageContainer.setVisible(true);
     this.messageContainer.setActive(true);
-    this.messageContainer.setPosition?.(this.W / 2, this.H * 0.44 + 10);
+    this.messageContainer.setPosition?.(this.W / 2, this.H * UI_LAYOUT.messageYRatio + 10);
     this.messageContainer.setScale?.(0.96);
     this.messageContainer.setAlpha(0);
 
     this.tweens.add({
       targets: this.messageContainer,
       alpha: 1,
-      y: this.H * 0.44,
+      y: this.H * UI_LAYOUT.messageYRatio,
       scale: 1,
       duration: 160,
       ease: "Sine.easeOut"
@@ -4655,28 +5208,27 @@ class SceneDemo extends Phaser.Scene {
     this.messageContainer.setScale?.(1);
   }
 
-  updateUI() {
+  updateHudValues(force = false) {
     const waveNumber = this.currentWaveIndex + 1;
 
-    this.energyText.setText(`${Math.floor(this.starEnergy)} / ${this.maxStarEnergy}`);
-    this.hpText.setText(`${this.planetHp} / 100`);
-    this.waveText.setText(String(waveNumber));
-    this.frontlineText.setText(this.getHudNextWaveText());
-    this.updateEnergyCapUpgradeButtonState();
+    this.setTextIfChanged(this.energyText, `${Math.floor(this.starEnergy)} / ${this.maxStarEnergy}`);
+    this.setTextIfChanged(this.hpText, `${this.planetHp} / 100`);
+    this.setTextIfChanged(this.waveText, waveNumber);
+    this.setTextIfChanged(this.frontlineText, this.getHudNextWaveText());
+    this.updateEnergyCapUpgradeButtonState(force);
+  }
+
+  updateUI(force = false) {
+    this.updateHudValues(force);
 
     for (const card of this.cards) {
-      if (this.starEnergy < card.data.cost && this.selectedCard?.id !== card.data.id) {
-        card.bg.setFillStyle(UI_THEME.card.unavailableFill, 0.58);
-        card.title.setAlpha(0.62);
-        card.cost.setAlpha(0.62);
-        card.thumbnail?.setAlpha(0.52);
-      } else if (this.selectedCard?.id !== card.data.id) {
-        card.bg.setFillStyle(UI_THEME.card.fill, 0.94);
-        card.title.setAlpha(1);
-        card.cost.setAlpha(1);
-        card.thumbnail?.setAlpha(1);
+      if (this.selectedCard?.id === card.data.id) {
+        this.applyCardVisualState(card, "selected", force);
+      } else {
+        this.applyCardVisualState(card, this.starEnergy < card.data.cost ? "unavailable" : "normal", force);
       }
     }
+    this.updateMeteorCardUI(force);
   }
 }
 
