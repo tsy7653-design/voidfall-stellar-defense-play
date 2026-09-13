@@ -250,7 +250,15 @@ class SceneDemo extends Phaser.Scene {
 
   addToFrontline(item) {
     this.frontlineLayer.add(item);
+    this.frontlineDepthDirty = true;
     return item;
+  }
+
+  flushFrontlineDepth() {
+    // Container 不自动按子对象 depth 排序；新增对象后的帧只整理一次。
+    if (!this.frontlineDepthDirty) return;
+    this.frontlineLayer?.sort?.("depth");
+    this.frontlineDepthDirty = false;
   }
 
   makeFrontlineText(x, y, content, style = {}) {
@@ -333,13 +341,13 @@ class SceneDemo extends Phaser.Scene {
     this.tweens?.killTweensOf?.(visual);
     this.transientVisuals?.delete(visual);
     this.transientVisualPriorities?.delete(visual);
+    this.enemyDeathVisuals?.delete(visual);
     visual.destroy?.();
   }
 
   clearTransientVisuals() {
     for (const visual of this.transientVisuals || []) {
-      this.tweens?.killTweensOf?.(visual);
-      visual?.destroy?.();
+      this.destroyTransientVisual(visual);
     }
     this.transientVisuals = new Set();
     this.transientVisualPriorities = new Map();
@@ -519,8 +527,7 @@ class SceneDemo extends Phaser.Scene {
 
   clearSupplyVisuals() {
     for (const visual of this.supplyVisuals || []) {
-      this.tweens?.killTweensOf?.(visual);
-      visual?.destroy?.();
+      this.destroyTransientVisual(visual);
     }
     this.supplyVisuals = [];
   }
@@ -639,13 +646,34 @@ class SceneDemo extends Phaser.Scene {
     return this.showEndScreen({ result: "victory", summary: this.gameEndSummary });
   }
 
+  getDefenseDisplayRows(lines) {
+    const rows = [];
+    for (const line of lines) {
+      const separator = line.indexOf("：");
+      const prefix = separator < 0 ? "" : line.slice(0, separator + 1);
+      const entries = separator < 0 ? line : line.slice(separator + 1);
+      let row = "";
+      for (const entry of entries.split("，")) {
+        const next = row ? `${row}，${entry}` : `${prefix}${entry}`;
+        if (next.length > 32 && row) { rows.push(row); row = `${prefix}${entry}`; }
+        else row = next;
+      }
+      if (row) rows.push(row);
+    }
+    return rows;
+  }
+
   showEndScreen({ result, summary }) {
     if (this.endScreenUi || !summary) return false;
 
     const isVictory = result === "victory";
     const defenseLines = this.formatFinalDefenseLines(summary.survivingBuildings);
+    const defenseRows = this.getDefenseDisplayRows(defenseLines);
+    const pageSize = 5;
+    const pageCount = Math.max(1, Math.ceil(defenseRows.length / pageSize));
+    const visibleRows = Math.min(pageSize, defenseRows.length);
     const panelWidth = Math.min(620, this.W * 0.82);
-    const panelHeight = Math.min(this.H - 80, 330 + defenseLines.length * 27);
+    const panelHeight = Math.min(this.H - 80, 340 + visibleRows * 29 + (pageCount > 1 ? 38 : 0));
     const panelX = this.W / 2;
     const panelY = this.H / 2;
     const panelTop = panelY - panelHeight / 2;
@@ -717,7 +745,9 @@ class SceneDemo extends Phaser.Scene {
       fontStyle: "bold"
     });
 
-    if (defenseLines.length === 0) {
+    const defenseTexts = [];
+    let defensePage = 0;
+    if (defenseRows.length === 0) {
       const emptyLine = addPanelText(panelX, panelTop + 224, isVictory
         ? "最终防线：防线虽已耗尽，但晨曦星成功获救"
         : "最终防线：已全数失守", {
@@ -726,12 +756,30 @@ class SceneDemo extends Phaser.Scene {
       });
       emptyLine.setOrigin(0.5, 0);
     } else {
-      defenseLines.forEach((line, index) => {
-        addPanelText(panelX - panelWidth / 2 + 42, panelTop + 220 + index * 27, line, {
+      defenseRows.slice(0, pageSize).forEach((line, index) => {
+        const text = addPanelText(panelX - panelWidth / 2 + 42, panelTop + 220 + index * 29, line, {
           fontSize: "16px",
           color: UI_THEME.panel.value
         });
+        text.setPadding(0, 2, 0, 2);
+        defenseTexts.push(text);
       });
+    }
+
+    let defensePagination = null;
+    if (pageCount > 1) {
+      const pageY = panelTop + 240 + visibleRows * 29;
+      const label = addPanelText(panelX, pageY, `1 / ${pageCount}`, { fontSize: "14px", color: UI_THEME.panel.body });
+      label.setOrigin(0.5);
+      const showPage = (offset) => {
+        defensePage = Math.max(0, Math.min(pageCount - 1, defensePage + offset));
+        defenseTexts.forEach((text, index) => this.setTextIfChanged(text, defenseRows[defensePage * pageSize + index] || ""));
+        this.setTextIfChanged(label, `${defensePage + 1} / ${pageCount}`);
+      };
+      const elements = [];
+      const previous = this.createModalButton(elements, panelX - 106, pageY, 76, "‹", () => showPage(-1), true, 202);
+      const next = this.createModalButton(elements, panelX + 106, pageY, 76, "›", () => showPage(1), true, 202);
+      defensePagination = { previous: previous.button, next: next.button, label };
     }
 
     const restartButton = this.add.rectangle(panelX, panelTop + panelHeight - 43, 250, 56, UI_THEME.panel.buttonFill, 0.98);
@@ -763,7 +811,7 @@ class SceneDemo extends Phaser.Scene {
       this.restartGame();
     });
 
-    const ui = { overlay, panel, panelHeaderBand, statsBand, panelAccent, restartButton, restartLabel, result };
+    const ui = { overlay, panel, panelHeaderBand, statsBand, panelAccent, restartButton, restartLabel, result, defenseTexts, defensePagination };
     this.endScreenUi = ui;
     if (!isVictory) this.gameOverUi = ui;
     return true;
@@ -822,8 +870,7 @@ class SceneDemo extends Phaser.Scene {
   }
 
   clearGameplayInteractionState() {
-    this.cancelPendingMapAction();
-    this.cancelCardDrag();
+    this.cancelPointerInteraction();
     this.clearCardSelection();
     this.clearBuildingSelection(true);
     this.destroySettingsMenu();
@@ -1218,20 +1265,21 @@ class SceneDemo extends Phaser.Scene {
       };
     })();
 
-    if (!this.add || !this.tweens?.add) {
+    if (!this.add || !this.tweens?.add || !this.ensureTransientCapacity(5, "core")) {
       finish();
       return;
     }
 
-    const sourceX = this.planetX + (this.enemyDirection < 0 ? 54 : -54);
+    const sourceX = this.planetX + (this.frontlineLayer?.x || 0) + (this.enemyDirection < 0 ? 54 : -54);
     const sourceY = this.planetY - 8;
     const targetX = this.energyText?.x || 320;
-    const targetY = 42;
-    const outerGlow = this.addToFrontline(this.add.circle(sourceX, sourceY, 18, 0x38bdf8, 0.12));
-    const pod = this.addToFrontline(this.add.rectangle(sourceX, sourceY, 18, 14, 0x93c5fd, 0.98));
-    const core = this.addToFrontline(this.add.circle(sourceX, sourceY, 5, 0xfef3c7, 0.98));
-    const trail = this.addToFrontline(this.add.circle(sourceX, sourceY, 12, 0x60a5fa, 0.22));
-    const trailCore = this.addToFrontline(this.add.circle(sourceX, sourceY, 4, 0x67e8f9, 0.48));
+    const targetY = this.energyText?.y || 18;
+    // 补给从战场飞向固定 HUD，飞行对象使用屏幕坐标，不再二次叠加平移。
+    const outerGlow = this.trackTransientVisual(this.add.circle(sourceX, sourceY, 18, 0x38bdf8, 0.12), "core");
+    const pod = this.trackTransientVisual(this.add.rectangle(sourceX, sourceY, 18, 14, 0x93c5fd, 0.98), "core");
+    const core = this.trackTransientVisual(this.add.circle(sourceX, sourceY, 5, 0xfef3c7, 0.98), "core");
+    const trail = this.trackTransientVisual(this.add.circle(sourceX, sourceY, 12, 0x60a5fa, 0.22), "core");
+    const trailCore = this.trackTransientVisual(this.add.circle(sourceX, sourceY, 4, 0x67e8f9, 0.48), "core");
 
     pod.setStrokeStyle(2, 0xdbeafe, 0.95).setDepth(96);
     core.setDepth(97);
@@ -1240,7 +1288,7 @@ class SceneDemo extends Phaser.Scene {
     trailCore.setDepth(95);
     this.supplyVisuals = [outerGlow, pod, core, trail, trailCore];
 
-    this.playPulseRing(sourceX, sourceY, {
+    this.playPulseRing(sourceX - (this.frontlineLayer?.x || 0), sourceY, {
       radius: 18,
       color: 0x67e8f9,
       alpha: 0.68,
@@ -1256,10 +1304,10 @@ class SceneDemo extends Phaser.Scene {
       duration: 820,
       ease: "Cubic.easeInOut",
       onComplete: () => {
-        const burst = this.add.circle(targetX, targetY, 14, 0x93c5fd, 0.55).setDepth(98);
+        this.clearSupplyVisuals();
+        if (!this.ensureTransientCapacity(1, "core")) { finish(); return; }
+        const burst = this.trackTransientVisual(this.add.circle(targetX, targetY, 14, 0x93c5fd, 0.55).setDepth(98), "core");
         this.supplyVisuals.push(burst);
-        this.playRadialSparks(targetX, targetY, 0xffd166, 4, 30, 300, 98);
-        this.floatText(targetX, targetY + 18, `${label}  +${amount} 星能`, "#dbeafe");
         this.tweens.add({
           targets: burst,
           scale: 2.2,
@@ -1344,6 +1392,8 @@ class SceneDemo extends Phaser.Scene {
     this.energyRegen = 1;
     this.energyRegenInterval = 5;
     this.energyRegenTimer = 0;
+    this.lastBuildingUpgradeAt = -Infinity;
+    this.pointerOwnerId = null;
 
     this.planetHp = 100;
     this.selectedCard = null;
@@ -1587,10 +1637,13 @@ class SceneDemo extends Phaser.Scene {
     this.input.on("pointerup", (pointer) => {
       this.finishPointerInteraction(pointer);
     });
-    this.input.on("pointercancel", () => this.cancelCardDrag());
+    this.input.on("pointercancel", () => this.cancelPointerInteraction());
+    this.input.on("pointerupoutside", () => this.cancelPointerInteraction());
+    this.input.on("gameout", () => this.cancelPointerInteraction());
   }
 
   update(time, delta) {
+    this.flushFrontlineDepth();
     const dt = delta / 1000;
 
     if (this.gameState !== "playing") return;
@@ -2874,6 +2927,40 @@ class SceneDemo extends Phaser.Scene {
       .map(({ enemy }) => enemy);
   }
 
+  collectHudThreats() {
+    // 只保留前四项；不为每只敌人创建排序记录，也不在受击回调里全量排序。
+    const visible = this.engagementHud.visibleEnemies || (this.engagementHud.visibleEnemies = []);
+    const priorities = this.engagementHud.priorities || (this.engagementHud.priorities = []);
+    visible.length = 0;
+    priorities.length = 0;
+    let count = 0;
+    let engagedCount = 0;
+    for (const enemy of this.enemies || []) {
+      if (!enemy || enemy.dead || (this.frontlineIndex != null && enemy.frontlineId !== this.frontlineIndex)) continue;
+      const engaged = enemy.attackTarget && (enemy.attackTarget.targetType === "planet" || this.isEnemyAttackTargetValid(enemy, enemy.attackTarget));
+      const priority = enemy.attackTarget?.targetType === "planet" ? 0 : engaged ? 1 : THREAT_HUD_SPECIAL_TYPES.has(enemy.type) ? 2 : 3;
+      count++;
+      if (engaged) engagedCount++;
+      const distance = this.getEnemyThreatDistance(enemy);
+      let index = 0;
+      while (index < visible.length && (priorities[index] < priority ||
+        (priorities[index] === priority && this.getEnemyThreatDistance(visible[index]) <= distance))) index++;
+      if (index >= ENGAGEMENT_HUD_MAX_SLOTS) continue;
+      visible.splice(index, 0, enemy);
+      priorities.splice(index, 0, priority);
+      if (visible.length > ENGAGEMENT_HUD_MAX_SLOTS) {
+        visible.pop();
+        priorities.pop();
+      }
+    }
+    return { visible, count, hiddenHasEngaged: engagedCount > priorities.filter((priority) => priority < 2).length };
+  }
+
+  invalidateEngagementHud() {
+    // 结构变动合并到下一帧；移动中的排名仍按 0.1 秒刷新。
+    this.engagementHudDirty = true;
+  }
+
   updateEngagementHudLayout(visibleCount, hasOverflow) {
     const ui = this.engagementHud;
     if (!ui) return;
@@ -2902,20 +2989,14 @@ class SceneDemo extends Phaser.Scene {
   updateEngagementHud(dt = 0, force = false) {
     if (!this.engagementHud) return;
     this.engagementHudAccumulator = (this.engagementHudAccumulator || 0) + Math.max(0, dt);
-    if (!force && this.engagementHudAccumulator < 0.1) return;
+    if (!force && !this.engagementHudDirty && this.engagementHudAccumulator < 0.1) return;
     this.engagementHudAccumulator = 0;
+    this.engagementHudDirty = false;
 
-    const threats = this.getThreatEnemies();
-    const engaged = this.getEngagedEnemies();
-    const engagedSet = new Set(engaged);
-    const visible = threats.slice(0, ENGAGEMENT_HUD_MAX_SLOTS);
-    const hidden = threats.slice(ENGAGEMENT_HUD_MAX_SLOTS);
-    const hiddenCount = Math.max(0, threats.length - ENGAGEMENT_HUD_MAX_SLOTS);
-    const hiddenHasEngaged = hidden.some((enemy) => (
-      enemy.attackTarget?.targetType === "planet" || engagedSet.has(enemy)
-    ));
+    const { visible, count, hiddenHasEngaged } = this.collectHudThreats();
+    const hiddenCount = Math.max(0, count - ENGAGEMENT_HUD_MAX_SLOTS);
     this.updateEngagementHudLayout(visible.length, hiddenCount > 0);
-    this.engagementHud.emptyText.setVisible(threats.length === 0);
+    this.engagementHud.emptyText.setVisible(count === 0);
     this.setTextIfChanged(
       this.engagementHud.overflowText,
       hiddenCount > 0 ? `+${hiddenCount} ${hiddenHasEngaged ? "交战中" : "接近中"}` : ""
@@ -2923,6 +3004,7 @@ class SceneDemo extends Phaser.Scene {
 
     this.engagementHud.slots.forEach((slot, index) => {
       const enemy = visible[index];
+      slot.enemy = enemy || null;
       const show = Boolean(enemy);
       slot.name.setVisible(show);
       slot.barBg.setVisible(show);
@@ -3302,7 +3384,7 @@ class SceneDemo extends Phaser.Scene {
     const target = this.selectedBuildingTarget;
     if (!this.isBuildingTargetValid(target) || this.gameState !== "playing") return false;
     const now = this.time?.now ?? Date.now();
-    if (now - (this.lastBuildingUpgradeAt || -Infinity) < 140) return false;
+    if (now - (this.lastBuildingUpgradeAt ?? -Infinity) < 140) return false;
     const level = this.getBuildingLevel(target);
     const type = target.targetType === "shield" ? "shield" : target.id;
     const cost = this.getBuildingUpgradeCost(type, level);
@@ -3976,20 +4058,22 @@ class SceneDemo extends Phaser.Scene {
   }
 
   floatText(x, y, content, color = "#ffffff") {
-    const t = this.makeText(x, y, content, {
+    if (!this.canSpawnTransientVisual()) return;
+    const t = this.trackTransientVisual(this.makeFrontlineText(x, y, content, {
       fontSize: "18px",
       color,
       fontStyle: "bold"
-    });
+    }));
 
     t.setOrigin(0.5);
+    t.setDepth(78);
 
     this.tweens.add({
       targets: t,
       y: y - 35,
       alpha: 0,
       duration: 750,
-      onComplete: () => t.destroy()
+      onComplete: () => this.destroyTransientVisual(t)
     });
   }
 
@@ -4042,7 +4126,7 @@ class SceneDemo extends Phaser.Scene {
       !this.demolishMode &&
       this.selectedCard &&
       this.selectedCard.id === "meteor" &&
-      pointer.y < this.H - 125;
+      !this.isPointerOverFixedUi(pointer);
 
     if (!shouldShow) {
       this.meteorPreviewOuter.setVisible(false);
@@ -4231,8 +4315,9 @@ class SceneDemo extends Phaser.Scene {
   }
 
   beginCardDragCandidate(card, pointer) {
-    if (this.gameState !== "playing") return;
+    if (this.gameState !== "playing" || this.frontlineTransitioning || !this.ownsPointer(pointer)) return;
 
+    this.cancelCardDrag();
     this.destroySettingsMenu();
     this.beginFixedUiInteraction();
     this.cardDragState = {
@@ -4241,6 +4326,7 @@ class SceneDemo extends Phaser.Scene {
       card: null,
       startX: pointer?.x ?? 0,
       startY: pointer?.y ?? 0,
+      pointerId: pointer?.id,
       ghost: null,
       outline: null,
       valid: false
@@ -4265,10 +4351,13 @@ class SceneDemo extends Phaser.Scene {
   }
 
   getDragCell(pointer) {
-    return this.gridCells.flat().find((cell) =>
-      Math.abs(pointer.x - (cell.x + this.frontlineLayer.x)) <= this.cellW / 2 &&
-      Math.abs(pointer.y - cell.y) <= this.cellH / 2
-    ) || null;
+    for (const row of this.gridCells) {
+      for (const cell of row) {
+        if (Math.abs(pointer.x - (cell.x + this.frontlineLayer.x)) <= this.cellW / 2 &&
+            Math.abs(pointer.y - cell.y) <= this.cellH / 2) return cell;
+      }
+    }
+    return null;
   }
 
   getDragShieldSlot(pointer) {
@@ -4278,11 +4367,12 @@ class SceneDemo extends Phaser.Scene {
     ) || null;
   }
 
-  updateCardDragGhost(pointer) {
-    if (this.gameState !== "playing") return;
+  updateCardDragGhost(pointer, releasing = false) {
+    if (this.gameState !== "playing" || this.frontlineTransitioning) return;
 
     const state = this.cardDragState;
-    if (!state?.candidateCard || !pointer?.isDown) return;
+    if (!state?.candidateCard || !pointer || (!pointer.isDown && !releasing)) return;
+    if (state.pointerId !== undefined && state.pointerId !== pointer.id) return;
     const distance = Phaser.Math.Distance.Between(state.startX, state.startY, pointer.x, pointer.y);
     if (!state.active && distance < CARD_DRAG_THRESHOLD) return;
     if (!state.active) {
@@ -4312,9 +4402,11 @@ class SceneDemo extends Phaser.Scene {
       valid = Boolean(target && this.canPlaceCardOnCell(card, target, false));
     }
     if (target) {
-      x = target.x + this.frontlineLayer.x;
-      y = target.y;
+      const position = card.id === "demolish" ? this.getTargetVisualPosition(target) : target;
+      x = position.x + this.frontlineLayer.x;
+      y = position.y;
     }
+    if (this.isPointerOverFixedUi(pointer)) valid = false;
     state.target = target;
     state.valid = valid;
     state.ghost.setPosition(x, y).setAlpha(valid ? 0.65 : 0.40);
@@ -4329,13 +4421,16 @@ class SceneDemo extends Phaser.Scene {
   }
 
   finishCardDrag(pointer) {
-    if (this.gameState !== "playing") {
+    if (this.gameState !== "playing" || this.frontlineTransitioning) {
       this.cancelCardDrag();
       return false;
     }
 
     const state = this.cardDragState;
     if (!state?.candidateCard) return false;
+    if (state.pointerId !== undefined && state.pointerId !== pointer?.id) return false;
+    // 松手位置可能没有触发最后一次 pointermove，必须重新校验落点。
+    if (state.active) this.updateCardDragGhost(pointer, true);
     const wasDrag = state.active;
     const card = state.card || state.candidateCard;
     const target = state.target;
@@ -4355,7 +4450,7 @@ class SceneDemo extends Phaser.Scene {
       this.setDemolishMode(true, false);
       this.tryDemolishTarget(target);
     } else if (card.id === "shield") this.tryPlaceShield(target);
-    else if (card.id === "meteor") this.castMeteor(pointer.x, pointer.y);
+    else if (card.id === "meteor") this.castMeteor(pointer.x - this.frontlineLayer.x, pointer.y);
     else this.tryPlaceOnCell(target);
     return true;
   }
@@ -4373,11 +4468,36 @@ class SceneDemo extends Phaser.Scene {
     this.cancelPendingMapAction();
   }
 
+  ownsPointer(pointer) {
+    return this.pointerOwnerId == null || pointer?.id == null || this.pointerOwnerId === pointer.id;
+  }
+
+  cancelPointerInteraction() {
+    if (this.pointerPressStart || this.cardDragState?.candidateCard) this.clearCardSelection();
+    this.cancelPendingMapAction();
+    this.cancelCardDrag();
+    this.pointerOwnerId = null;
+    this.pointerPressStart = null;
+    this.pointerDragging = false;
+    this.pointerIsTouch = false;
+    this.fixedUiPointerActive = false;
+    this.clearGridFeedback();
+  }
+
+  isPointerOverFixedUi(pointer) {
+    if (!pointer || pointer.x < 0 || pointer.x > this.W || pointer.y < 0 || pointer.y >= this.H - 125) return true;
+    const panels = [this.statusBarBg, this.rightHudBg, this.engagementHud?.panel,
+      this.buildingDetailUi?.panel, this.settingsMenuUi?.panel];
+    return panels.some((panel) => panel?.visible && panel.parentContainer?.visible !== false &&
+      panel.getBounds?.().contains(pointer.x, pointer.y));
+  }
+
   beginPointerInteraction(pointer) {
     if (this.gameState !== "playing") return;
 
-    if (!pointer || this.pointerPressStart) return;
+    if (!pointer || this.pointerPressStart || !this.ownsPointer(pointer)) return;
 
+    this.pointerOwnerId = pointer.id ?? null;
     this.pointerPressStart = { x: pointer.x, y: pointer.y };
     this.pointerDragging = false;
     this.pendingDemolishTarget = null;
@@ -4391,7 +4511,7 @@ class SceneDemo extends Phaser.Scene {
   trackPointerMovement(pointer) {
     if (this.gameState !== "playing") return;
 
-    if (!this.pointerPressStart || !pointer?.isDown) return;
+    if (!this.pointerPressStart || !pointer?.isDown || !this.ownsPointer(pointer)) return;
 
     const distance = Phaser.Math.Distance.Between(
       this.pointerPressStart.x,
@@ -4413,7 +4533,7 @@ class SceneDemo extends Phaser.Scene {
   }
 
   isTouchPointer(pointer) {
-    return pointer?.pointerType === "touch" || pointer?.event?.pointerType === "touch";
+    return pointer?.wasTouch === true || pointer?.pointerType === "touch" || pointer?.event?.pointerType === "touch";
   }
 
   queuePlacementTarget(type, target) {
@@ -4448,6 +4568,13 @@ class SceneDemo extends Phaser.Scene {
   }
 
   finishPointerInteraction(pointer) {
+    if (!this.ownsPointer(pointer)) return;
+    // Phaser 3 将 touchcancel 派发为 pointerup，取消不能当作确认部署。
+    if (pointer?.wasCanceled === true) {
+      this.cancelPointerInteraction();
+      return;
+    }
+    this.pointerOwnerId = null;
     if (this.gameState !== "playing") {
       this.cancelPendingMapAction();
       this.cancelCardDrag();
@@ -4462,6 +4589,9 @@ class SceneDemo extends Phaser.Scene {
       this.finishCardDrag(pointer);
       this.fixedUiPointerActive = false;
       this.pointerDragging = false;
+      this.pointerPressStart = null;
+      this.pointerIsTouch = false;
+      this.cancelPendingMapAction();
       return;
     }
 
@@ -4471,7 +4601,7 @@ class SceneDemo extends Phaser.Scene {
     const meteorCast = this.pendingMeteorCast;
     const isMapTap =
       pointer &&
-      pointer.y < this.H - 125 &&
+      !this.isPointerOverFixedUi(pointer) &&
       !this.pointerDragging &&
       !this.fixedUiPointerActive &&
       !this.frontlineTransitioning;
@@ -4694,6 +4824,7 @@ class SceneDemo extends Phaser.Scene {
     const durability = this.durabilityConfig.building[card.id];
     const healthBar = this.durabilityConfig.healthBar;
     const buildingGlow = this.addToFrontline(this.add.circle(cell.x, cell.y, 28, color, 0.12));
+    buildingGlow.setDepth?.(55);
 
     const visualConfig = BUILDING_VISUALS[card.id];
     const usesTexture = visualConfig && this.hasTexture(visualConfig.texture);
@@ -4701,6 +4832,7 @@ class SceneDemo extends Phaser.Scene {
       ? this.addToFrontline(this.add.image(cell.x, cell.y, visualConfig.texture).setScale(visualConfig.scale))
       : this.addToFrontline(this.add.rectangle(cell.x, cell.y, 44, 44, color, 0.95));
     if (!usesTexture) body.setStrokeStyle(3, 0x020617, 1);
+    body.setDepth?.(60);
     const facingDirection = this.isDirectionalBuildingVisual(card.id)
       ? this.getWingFacingDirection(cell.frontlineId, "building")
       : 0;
@@ -4709,6 +4841,7 @@ class SceneDemo extends Phaser.Scene {
     }
 
     const core = usesTexture ? null : this.addToFrontline(this.add.circle(cell.x, cell.y, 8, 0xffffff, 0.7));
+    core?.setDepth?.(61);
 
     const text = this.makeFrontlineText(cell.x, cell.y + 29, label, {
       fontSize: "12px",
@@ -4862,6 +4995,7 @@ class SceneDemo extends Phaser.Scene {
       ? this.addToFrontline(this.add.image(slot.x, slot.y, BUILDING_VISUALS.shield.texture).setScale(BUILDING_VISUALS.shield.scale))
       : this.addToFrontline(this.add.rectangle(slot.x, slot.y, 14, this.cellH - 12, 0x93c5fd, 0.38));
     if (!shieldUsesTexture) shieldCore.setStrokeStyle(2, 0xdbeafe, 0.85);
+    shieldCore.setDepth?.(60);
 
     const shieldHpBg = this.addToFrontline(this.add.rectangle(
       slot.x - healthBar.shieldWidth / 2,
@@ -5233,7 +5367,7 @@ class SceneDemo extends Phaser.Scene {
 
     const outgoingX = -this.enemyDirection * this.W;
 
-    this.cancelPendingDemolish();
+    this.cancelPointerInteraction();
     this.clearBuildingSelection(true);
     this.destroySettingsMenu();
     this.pointerPressStart = null;
@@ -5477,8 +5611,8 @@ class SceneDemo extends Phaser.Scene {
     shield.shieldCore.setAlpha?.(baseAlpha);
     shield.ambientTween = this.tweens.add({
       targets: shield.shieldCore,
-      alpha: shield.usesTexture ? 0.72 : 0.28,
-      duration: 900,
+      alpha: shield.usesTexture ? 0.9 : 0.32,
+      duration: 1500,
       yoyo: true,
       repeat: -1
     });
@@ -5931,31 +6065,31 @@ class SceneDemo extends Phaser.Scene {
     const isTank = enemy.type === "tank";
     const isSpecial = ["ranged", "breaker", "leaper"].includes(enemy.type);
     const duration = deathStyle.duration;
+    // 实体消散与碎光共用预算，群体死亡不能绕过 112 个临时对象上限。
+    const container = enemy.container;
+    if (!container?.active || !this.tweens?.add || !this.ensureTransientCapacity(1, "normal")) {
+      container?.destroy?.();
+      return;
+    }
+    this.trackTransientVisual(container);
+    this.enemyDeathVisuals ??= new Set();
+    this.enemyDeathVisuals.add(container);
     this.playPulseRing(enemy.x, enemy.y, {
       radius: isTank ? 22 : 17,
       color,
-      alpha: 0.86,
+      alpha: isTank || isSpecial ? 0.62 : 0.42,
       scale: isTank ? 2.1 : 1.85,
       duration: Math.min(duration, 420),
       strokeWidth: isTank ? 3 : 2,
       depth: 74,
-      priority: isSpecial ? "core" : "normal"
+      priority: "normal"
     });
-    this.playRadialSparks(enemy.x, enemy.y, color, deathStyle.sparks, deathStyle.distance, duration, 75, isSpecial ? "core" : "normal");
+    this.playRadialSparks(enemy.x, enemy.y, color, deathStyle.sparks, deathStyle.distance, duration, 75, "normal");
     if (enemy.type === "breaker") {
-      this.playPulseRing(enemy.x, enemy.y, { radius: 12, color: 0xf472b6, scale: 2.4, duration: 240, depth: 75, priority: "core" });
+      this.playPulseRing(enemy.x, enemy.y, { radius: 12, color: 0xf472b6, scale: 2.4, duration: 240, depth: 75, priority: "normal" });
     }
 
-    const container = enemy.container;
-    if (!container?.active || !this.tweens?.add) {
-      container?.destroy?.();
-      return;
-    }
-
-    this.enemyDeathVisuals ??= new Set();
-    this.enemyDeathVisuals.add(container);
-    container.setScale?.(1);
-    container.setAlpha?.(1);
+    // 出生途中被击败时，从当前透明度渐出，不跳回完全不透明。
     container.setAngle?.(0);
     enemy.body?.setTintFill?.(isTank ? 0xffb4a8 : 0xe9d5ff);
     this.tweens.add({
@@ -5966,8 +6100,7 @@ class SceneDemo extends Phaser.Scene {
       duration,
       ease: "Cubic.easeIn",
       onComplete: () => {
-        this.enemyDeathVisuals?.delete(container);
-        container.destroy?.();
+        this.destroyTransientVisual(container);
       }
     });
   }
@@ -6219,12 +6352,6 @@ class SceneDemo extends Phaser.Scene {
     }
   }
 
-  saveCollectorOutput() {
-    // 双战区建筑保留在原战区，离开后不再转为后台产能。
-    this.storedCollectors = [];
-    return 0;
-  }
-
   getCollectorCounts() {
     const current = this.buildings.filter((building) => (
       building.id === "collector" && !building.destroyed && building.wing === this.activeWing
@@ -6438,10 +6565,10 @@ class SceneDemo extends Phaser.Scene {
       isTank ? 0x7f1d1d : isBreaker ? 0xc026d3 : isLeaper ? 0x8b5cf6 : isRanged ? 0xa78bfa : isFast ? 0xe879f9 : 0xfb7185,
       0.14
     );
-    const motionTrail = isFast ? this.add.ellipse(-12, 0, 38, 13, 0xe879f9, 0.12) : null;
+    const motionTrail = isFast ? this.add.ellipse(-facingDirection * 12, 0, 38, 13, 0xe879f9, 0.12) : null;
     const armorRing = isTank ? this.add.circle(0, 0, 25, 0x000000, 0) : null;
     armorRing?.setStrokeStyle?.(2, 0xff8a7a, 0.36);
-    const rangedCore = isRanged ? this.add.circle(-7, 0, 5, 0xd8b4fe, 0.48) : null;
+    const rangedCore = isRanged ? this.add.circle(facingDirection * 7, 0, 5, 0xd8b4fe, 0.48) : null;
     const enemyVisual = ENEMY_VISUALS[type] || ENEMY_VISUALS.basic;
     const usesTexture = this.hasTexture(enemyVisual.texture);
     const body = usesTexture
@@ -6492,7 +6619,7 @@ class SceneDemo extends Phaser.Scene {
 
     this.applyEnemyWingFacing(enemy);
     this.enemies.push(enemy);
-    this.updateEngagementHud(0, true);
+    this.invalidateEngagementHud();
     this.playEnemySpawnMaterializeEffect(enemy);
     this.playPortalSpawnEffect(x, y);
   }
@@ -6502,6 +6629,12 @@ class SceneDemo extends Phaser.Scene {
 
     for (const enemy of this.enemies) {
       if (enemy.dead || !enemy.attackTarget) continue;
+
+      // 新部署的前排设施也必须挡住远射，不能继续穿过它攻击旧目标。
+      if (enemy.type === "ranged" && this.findRangedTarget(enemy) !== enemy.attackTarget) {
+        this.clearEnemyTarget(enemy);
+        continue;
+      }
 
       if (!this.isEnemyAttackTargetValid(enemy, enemy.attackTarget)) {
         this.clearEnemyTarget(enemy);
@@ -6601,69 +6734,38 @@ class SceneDemo extends Phaser.Scene {
   }
 
   findBlockingTarget(enemy) {
-    const candidates = [];
-
-    for (const building of this.buildings) {
-      if (
-        building.destroyed ||
-        building.frontlineId !== enemy.frontlineId ||
-        building.cell.row !== enemy.row
-      ) {
-        continue;
-      }
-
-      const contactX = this.getBlockingContactX(enemy, building);
-
-      if (this.hasEnemyReachedContact(enemy, contactX)) {
-        candidates.push({ target: building, contactX });
+    let closest = null;
+    let closestOrder = Infinity;
+    // 每只移动敌人每帧调用，直接选最前方接触点，保留同距时建筑优先的顺序。
+    for (let group = 0; group < 2; group++) {
+      const targets = group === 0 ? this.buildings : this.shields;
+      for (const target of targets) {
+        const position = group === 0 ? target.cell : target.slot;
+        if (target.destroyed || target.frontlineId !== enemy.frontlineId || position.row !== enemy.row) continue;
+        const contactX = this.getBlockingContactX(enemy, target);
+        const order = contactX * enemy.direction;
+        if (order >= closestOrder || !this.hasEnemyReachedContact(enemy, contactX)) continue;
+        closest = target;
+        closestOrder = order;
       }
     }
-
-    for (const shield of this.shields) {
-      if (
-        shield.destroyed ||
-        shield.frontlineId !== enemy.frontlineId ||
-        shield.slot.row !== enemy.row
-      ) {
-        continue;
-      }
-
-      const contactX = this.getBlockingContactX(enemy, shield);
-
-      if (this.hasEnemyReachedContact(enemy, contactX)) {
-        candidates.push({ target: shield, contactX });
-      }
-    }
-
-    candidates.sort((a, b) => enemy.direction < 0
-      ? b.contactX - a.contactX
-      : a.contactX - b.contactX);
-
-    return candidates[0]?.target ?? null;
+    return closest;
   }
 
   findRangedTarget(enemy) {
-    const candidates = [];
-
-    for (const building of this.buildings) {
-      if (this.isValidEnemyTarget(enemy, building)) {
-        candidates.push(building);
+    let closest = null;
+    let closestDistance = Infinity;
+    for (let group = 0; group < 2; group++) {
+      const targets = group === 0 ? this.buildings : this.shields;
+      for (const target of targets) {
+        const distance = (this.getEnemyTargetX(target) - enemy.x) * enemy.direction;
+        if (distance < 0 || distance > enemy.attackRange || distance >= closestDistance) continue;
+        if (!this.isValidEnemyTarget(enemy, target)) continue;
+        closest = target;
+        closestDistance = distance;
       }
     }
-
-    for (const shield of this.shields) {
-      if (this.isValidEnemyTarget(enemy, shield)) {
-        candidates.push(shield);
-      }
-    }
-
-    return candidates
-      .map((target) => ({
-        target,
-        distance: (this.getEnemyTargetX(target) - enemy.x) * enemy.direction
-      }))
-      .filter(({ distance }) => distance >= 0 && distance <= enemy.attackRange)
-      .sort((left, right) => left.distance - right.distance)[0]?.target ?? null;
+    return closest;
   }
 
   getBlockingContactX(enemy, target) {
@@ -6691,7 +6793,7 @@ class SceneDemo extends Phaser.Scene {
     enemy.container.x = enemy.x;
     enemy.attackTarget = target;
     enemy.attackTimer = 0;
-    this.updateEngagementHud(0, true);
+    this.invalidateEngagementHud();
   }
 
   tryLeaperJump(enemy, target) {
@@ -6757,7 +6859,7 @@ class SceneDemo extends Phaser.Scene {
 
     enemy.attackTarget = target;
     enemy.attackTimer = 0;
-    this.updateEngagementHud(0, true);
+    this.invalidateEngagementHud();
   }
 
   getEnemyTargetX(target) {
@@ -6807,7 +6909,7 @@ class SceneDemo extends Phaser.Scene {
 
     enemy.attackTarget = null;
     enemy.attackTimer = 0;
-    this.updateEngagementHud(0, true);
+    this.invalidateEngagementHud();
   }
 
   clearEnemyTargetsFor(target) {
@@ -7041,7 +7143,9 @@ class SceneDemo extends Phaser.Scene {
 
   updateEnemyHealthBar(enemy) {
     if (!enemy || enemy.dead) return;
-    this.updateEngagementHud(0, true);
+    for (const slot of this.engagementHud?.slots || []) {
+      if (slot.enemy === enemy) slot.barFill.setScale(Phaser.Math.Clamp(enemy.hp / enemy.maxHp, 0, 1), 1);
+    }
   }
 
   destroyEnemy(enemy, giveReward) {
@@ -7064,7 +7168,7 @@ class SceneDemo extends Phaser.Scene {
 
     this.tweens.killTweensOf(enemy.container);
     enemy.spawnTween = null;
-    this.updateEngagementHud(0, true);
+    this.invalidateEngagementHud();
 
     if (giveReward) this.playEnemyDeathEffect(enemy);
     else enemy.container.destroy();
@@ -7202,7 +7306,7 @@ class SceneDemo extends Phaser.Scene {
 
     if (this.fixedUiPointerActive) return;
 
-    if (pointer.y > this.H - 125) return;
+    if (!this.ownsPointer(pointer) || this.isPointerOverFixedUi(pointer)) return;
 
     if (this.frontlineTransitioning) return;
 
@@ -7211,7 +7315,7 @@ class SceneDemo extends Phaser.Scene {
     if (!this.selectedCard) return;
 
     if (this.selectedCard.id === "meteor") {
-      this.pendingMeteorCast = { x: pointer.x, y: pointer.y };
+      this.pendingMeteorCast = { x: pointer.x - this.frontlineLayer.x, y: pointer.y };
     }
   }
 
@@ -7314,6 +7418,9 @@ const config = {
   scene: [SceneDemo],
 
   resolution: Math.min(window.devicePixelRatio || 1, 2),
+
+  // 浏览器手势由 Canvas touch-action 与页面监听抑制，避免引擎取消不可取消的 touchcancel。
+  input: { touch: { capture: false } },
 
   render: {
     antialias: true,
