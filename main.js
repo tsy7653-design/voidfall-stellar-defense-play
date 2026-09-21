@@ -11,7 +11,7 @@ const ENERGY_CAP_UPGRADE_COSTS = Object.freeze({
   90: 40
 });
 const CARD_DRAG_THRESHOLD = 10;
-const GAME_VERSION = "v0.11.0-dev";
+const GAME_VERSION = "v0.12.0-dev";
 const BASE_METEOR_DAMAGE = 18;
 const METEOR_DAMAGE_PER_LEVEL = 4;
 const METEOR_UPGRADE_BASE_COST = 10;
@@ -449,7 +449,7 @@ class SceneDemo extends Phaser.Scene {
 
   preload() {
     for (const [key, path] of Object.entries(GAME_ASSET_PATHS)) {
-      this.load.image(key, path);
+      if (!this.hasTexture(key)) this.load.image(key, path);
     }
   }
 
@@ -782,12 +782,12 @@ class SceneDemo extends Phaser.Scene {
       defensePagination = { previous: previous.button, next: next.button, label };
     }
 
-    const restartButton = this.add.rectangle(panelX, panelTop + panelHeight - 43, 250, 56, UI_THEME.panel.buttonFill, 0.98);
+    const restartButton = this.add.rectangle(panelX - 118, panelTop + panelHeight - 43, 210, 56, UI_THEME.panel.buttonFill, 0.98);
     restartButton.setStrokeStyle(1, UI_THEME.panel.buttonBorder, 0.94);
     restartButton.setDepth(202);
     restartButton.setInteractive({ useHandCursor: true });
 
-    const restartLabel = addPanelText(panelX, panelTop + panelHeight - 44, "再来一次", {
+    const restartLabel = addPanelText(panelX - 118, panelTop + panelHeight - 44, "再来一次", {
       fontSize: UI_THEME.type.button,
       color: UI_THEME.panel.value,
       fontStyle: "bold"
@@ -811,7 +811,8 @@ class SceneDemo extends Phaser.Scene {
       this.restartGame();
     });
 
-    const ui = { overlay, panel, panelHeaderBand, statsBand, panelAccent, restartButton, restartLabel, result, defenseTexts, defensePagination };
+    const menuButton = this.createModalButton([], panelX + 118, panelTop + panelHeight - 43, 210, "返回星港", () => this.showMenuConfirmation(), true, 202);
+    const ui = { overlay, panel, panelHeaderBand, statsBand, panelAccent, restartButton, restartLabel, menuButton: menuButton.button, result, defenseTexts, defensePagination };
     this.endScreenUi = ui;
     if (!isVictory) this.gameOverUi = ui;
     return true;
@@ -910,15 +911,15 @@ class SceneDemo extends Phaser.Scene {
     return true;
   }
 
-  startGame() {
-    if (this.gameState !== "ready" || !this.startScreenUi) return false;
+  startGame(fromMenu = false) {
+    if (this.gameState !== "ready" || (!this.startScreenUi && !fromMenu)) return false;
     const startUi = this.startScreenUi;
-    startUi.startButton?.disableInteractive?.();
+    startUi?.startButton?.disableInteractive?.();
     this.startScreenUi = null;
     this.gameState = "playing";
     this.guardElapsedSeconds = 0;
     this.waveStartTimer = Math.max(0, this.waveStartTimer || 2.5);
-    const fadeTween = this.tweens?.add?.({
+    const fadeTween = startUi && this.tweens?.add?.({
       targets: startUi.elements,
       alpha: 0,
       duration: 180,
@@ -943,7 +944,7 @@ class SceneDemo extends Phaser.Scene {
     const overlay = track(this.add.rectangle(x, y, this.W, this.H, 0x020617, 0.72));
     overlay.setDepth(180).setInteractive();
     overlay.on("pointerdown", () => this.beginFixedUiInteraction());
-    const panel = track(this.add.rectangle(x, y, 500, 275, UI_THEME.panel.fill, 0.97));
+    const panel = track(this.add.rectangle(x, y + 20, 500, 330, UI_THEME.panel.fill, 0.97));
     panel.setStrokeStyle(1, UI_THEME.panel.border, 0.74).setDepth(181);
     const title = track(this.makeText(x, y - 94, "晨曦星正在等待你", {
       fontSize: UI_THEME.type.panelTitle,
@@ -958,7 +959,8 @@ class SceneDemo extends Phaser.Scene {
     copy.setOrigin(0.5, 0).setDepth(182);
     const continueButton = this.createModalButton(elements, x - 118, y + 70, 210, "继续守护", () => this.resumeGame(), false, 182);
     const restartButton = this.createModalButton(elements, x + 118, y + 70, 210, "重新开始", () => this.showRestartConfirmation(), true, 182);
-    this.pauseUi = { elements, overlay, panel, continueButton: continueButton.button, restartButton: restartButton.button };
+    const menuButton = this.createModalButton(elements, x, y + 136, 446, "返回星港", () => this.showMenuConfirmation(), true, 182);
+    this.pauseUi = { elements, overlay, panel, continueButton: continueButton.button, restartButton: restartButton.button, menuButton: menuButton.button };
     return true;
   }
 
@@ -974,7 +976,7 @@ class SceneDemo extends Phaser.Scene {
   }
 
   resumeGame() {
-    if (this.gameState !== "paused" || this.restartConfirmUi) return false;
+    if (this.gameState !== "paused" || this.restartConfirmUi || this.menuConfirmUi) return false;
     this.destroyFixedUi(this.pauseUi);
     this.pauseUi = null;
     this.gameState = "playing";
@@ -1038,15 +1040,121 @@ class SceneDemo extends Phaser.Scene {
   }
 
   performSceneRestart() {
-    if (this.restartRequested || !this.scene?.restart) return false;
+    if (this.restartRequested || this.returnToMenuRequested || this.menuConfirmUi || !this.scene?.restart) return false;
     this.restartRequested = true;
     this.restartConfirmUi?.restartButton?.disableInteractive?.();
     this.clearSupplyVisuals();
     this.stopBuildingRepair();
     this.tweens?.resumeAll?.();
     this.gameplayTweensPaused = false;
-    this.scene.restart();
+    // 重开不能沿用上一次由星港传入的自动开始标志，保留原 ready 流程。
+    this.scene.restart({ fromMenu: false });
     return true;
+  }
+
+  showMenuConfirmation() {
+    if (this.menuConfirmUi || this.restartRequested || this.returnToMenuRequested ||
+        !["paused", "lost", "won"].includes(this.gameState)) return false;
+    const elements = [];
+    const x = this.W / 2;
+    const y = this.H / 2;
+    const overlay = this.add.rectangle(x, y, this.W, this.H, 0x020617, 0.78).setDepth(210).setInteractive();
+    const panel = this.add.rectangle(x, y, 550, 270, UI_THEME.panel.fill, 0.98).setDepth(211);
+    panel.setStrokeStyle(1, UI_THEME.panel.border, 0.7);
+    elements.push(overlay, panel);
+    const title = this.makeText(x, y - 65, "结束本次守护并返回星港？", {
+      fontSize: "26px", color: UI_THEME.panel.value, fontStyle: "bold"
+    }).setOrigin(0.5).setDepth(212);
+    const copy = this.makeText(x, y - 8, "本局防线与进度将被清空。", {
+      fontSize: "18px", color: UI_THEME.panel.body
+    }).setOrigin(0.5).setDepth(212);
+    elements.push(title, copy);
+    const cancel = this.createModalButton(elements, x - 118, y + 76, 210, "留在此处", () => this.cancelMenuConfirmation(), true, 212);
+    const confirm = this.createModalButton(elements, x + 118, y + 76, 210, "返回星港", () => this.returnToMainMenu(), false, 212);
+    this.menuConfirmUi = { elements, overlay, cancelButton: cancel.button, confirmButton: confirm.button };
+    return true;
+  }
+
+  cancelMenuConfirmation() {
+    if (!this.menuConfirmUi || this.returnToMenuRequested) return false;
+    this.destroyFixedUi(this.menuConfirmUi);
+    this.menuConfirmUi = null;
+    return true;
+  }
+
+  returnToMainMenu() {
+    if (!this.menuConfirmUi || this.returnToMenuRequested || this.restartRequested) return false;
+    this.returnToMenuRequested = true;
+    this.gameState = "menu";
+    this.input.enabled = false;
+    this.clearGameplayInteractionState();
+    this.time.removeAllEvents();
+    this.tweens.resumeAll();
+    this.tweens.killAll();
+    // Scene.start 关闭当前场景；SHUTDOWN 完成视觉清理后再释放本局数据。
+    this.scene.start("StellarTerminal");
+    return true;
+  }
+
+  clearBattleSessionForMenu() {
+    this.resetRunStats();
+    this.resetSupplyState();
+    this.resetMeteorProgress();
+    this.buildings = [];
+    this.shields = [];
+    this.enemies = [];
+    this.projectiles = [];
+    this.gridCells = [];
+    this.shieldSlots = [];
+    this.cards = [];
+    this.wingStates = this.createWingStates();
+    this.storedCollectors = [];
+    this.waveQueue = [];
+    this.waveActive = false;
+    this.waveSpawned = 0;
+    this.currentWaveIndex = 0;
+    this.waveSpawnTimer = 0;
+    this.waveStartTimer = 2.5;
+    this.guardElapsedSeconds = 0;
+    this.energyRegenTimer = 0;
+    this.starEnergy = 10;
+    this.maxStarEnergy = 50;
+    this.planetHp = 100;
+    this.stageChoiceWaves = new Set();
+    this.stageChoiceActive = false;
+    this.isGameOver = false;
+    this.activeWing = "right";
+    this.gameEndSummary = null;
+    this.gameOverSummary = null;
+    this.menuConfirmUi = null;
+    this.endScreenUi = null;
+    this.gameOverUi = null;
+    this.pauseUi = null;
+    this.frontlineLayer = null;
+    this.battleEntryObjects = null;
+  }
+
+  enterBattleFromMenu() {
+    // 只渐入本次创建的独立对象，不改 Camera alpha，也不重建任何 UI。
+    this.input.enabled = false;
+    const ambient = this.tweens.getTweens();
+    for (const tween of ambient) tween.pause();
+    this.battleEntryObjects = this.children.list.filter((object) => object !== this.battlefieldBackground)
+      .map((object) => ({ object, alpha: object.alpha }));
+    for (const { object } of this.battleEntryObjects) object.setAlpha(0);
+    this.tweens.addCounter({
+      from: 0, to: 1, duration: 320, ease: "Sine.easeOut",
+      onUpdate: (tween) => {
+        for (const { object, alpha } of this.battleEntryObjects || []) object.setAlpha(alpha * tween.getValue());
+      },
+      onComplete: () => {
+        this.battleEntryObjects = null;
+        this.input.enabled = true;
+        for (const tween of ambient) tween.resume();
+        this.syncWingAnimationState();
+        this.startGame(true);
+      }
+    });
   }
 
   shouldShowStageChoice(completedWave) {
@@ -1374,7 +1482,7 @@ class SceneDemo extends Phaser.Scene {
     return true;
   }
 
-  create() {
+  create(data = {}) {
     this.cameras.main.setRoundPixels(true);
 
     this.W = this.scale.width;
@@ -1384,7 +1492,10 @@ class SceneDemo extends Phaser.Scene {
     this.transientVisualPriorities = new Map();
     this.enemyDeathVisuals = new Set();
     this.backgroundDriftLayers = [];
-    this.events?.once?.(Phaser.Scenes.Events.SHUTDOWN, () => this.cleanupSceneAnimations());
+    this.events?.once?.(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.cleanupSceneAnimations();
+      if (this.returnToMenuRequested) this.clearBattleSessionForMenu();
+    });
 
     // 星能系统
     this.starEnergy = 10;
@@ -1415,6 +1526,10 @@ class SceneDemo extends Phaser.Scene {
     this.gameOverUi = null;
     this.endScreenUi = null;
     this.restartRequested = false;
+    this.returnToMenuRequested = false;
+    this.menuConfirmUi = null;
+    this.battleEntryObjects = null;
+    this.input.enabled = true;
     this.stageChoiceActive = false;
     this.stageChoiceResolved = false;
     this.stageChoiceWave = 0;
@@ -1621,7 +1736,7 @@ class SceneDemo extends Phaser.Scene {
     this.createCards();
     this.createUI();
     this.createMeteorPreview();
-    this.showStartScreen();
+    if (!data.fromMenu) this.showStartScreen();
 
     this.input.on("pointermove", (pointer) => {
       this.updateCardDragGhost(pointer);
@@ -1640,6 +1755,7 @@ class SceneDemo extends Phaser.Scene {
     this.input.on("pointercancel", () => this.cancelPointerInteraction());
     this.input.on("pointerupoutside", () => this.cancelPointerInteraction());
     this.input.on("gameout", () => this.cancelPointerInteraction());
+    if (data.fromMenu) this.enterBattleFromMenu();
   }
 
   update(time, delta) {
@@ -7409,13 +7525,231 @@ class SceneDemo extends Phaser.Scene {
   }
 }
 
+// 星港只管理局外画面；不继承战斗 update，不创建隐藏战场或第二个 Phaser Game。
+const TERMINAL_STYLE = {
+  left: 88, buttonWidth: 360, primaryY: 430, secondaryRows: [536, 638],
+  cyan: 0x69dcff, ink: 0x081527, muted: "#a9bfd7", text: "#e5f3ff",
+  exitDuration: 320, maxAmbientTweens: 6
+};
+
+class StellarTerminalScene extends Phaser.Scene {
+  constructor() {
+    super("StellarTerminal");
+  }
+
+  makeText(...args) {
+    return SceneDemo.prototype.makeText.call(this, ...args);
+  }
+
+  createModalButton(...args) {
+    return SceneDemo.prototype.createModalButton.call(this, ...args);
+  }
+
+  beginFixedUiInteraction() {
+    this.resetMenuPress();
+  }
+
+  preload() {
+    // 共用纹理缓存，转场和返回星港不重复请求正式素材。
+    for (const [key, path] of Object.entries(GAME_ASSET_PATHS)) {
+      if (!this.textures.exists(key)) this.load.image(key, path);
+    }
+  }
+
+  create() {
+    this.W = this.scale.width;
+    this.H = this.scale.height;
+    this.gameState = "menu";
+    this.startRequested = false;
+    this.terminalPanel = null;
+    this.menuPress = null;
+    this.menuButtons = {};
+    this.ambientTweens = [];
+    this.menuTitle = null;
+    this.input.enabled = true;
+    this.createTerminalBackdrop();
+    this.createMainMenu();
+    this.input.on("pointerup", () => this.resetMenuPress());
+    this.input.on("pointercancel", () => this.resetMenuPress());
+    this.input.on("pointerupoutside", () => this.resetMenuPress());
+    this.input.on("gameout", () => this.resetMenuPress());
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.tweens.killAll();
+      this.time.removeAllEvents();
+      this.ambientTweens = [];
+      this.menuPress = null;
+      this.terminalPanel = null;
+      this.menuButtons = {};
+      this.menuRoot = null;
+    });
+  }
+
+  addMenuAmbient(config) {
+    if (this.ambientTweens.length >= TERMINAL_STYLE.maxAmbientTweens) return;
+    this.ambientTweens.push(this.tweens.add(config));
+  }
+
+  createTerminalBackdrop() {
+    const backgroundKey = "bg_space_battlefield_hd";
+    if (this.textures.exists(backgroundKey)) {
+      this.menuBackground = this.add.image(this.W / 2, this.H / 2, backgroundKey);
+      this.menuBackground.setScale(Math.max(this.W / this.menuBackground.width, this.H / this.menuBackground.height));
+    } else {
+      this.menuBackground = this.add.rectangle(this.W / 2, this.H / 2, this.W, this.H, 0x050a1a);
+    }
+    this.menuRoot = this.add.container(0, 0);
+    const add = (item) => this.menuRoot.add(item);
+    // 宽幅淡遮光带只为标题提供对比，不参与输入，也不覆盖整个宇宙。
+    add(this.add.rectangle(290, 360, 580, 720, 0x040a18, 0.56));
+    add(this.add.rectangle(598, 360, 36, 720, 0x040a18, 0.27));
+    add(this.add.rectangle(626, 360, 20, 720, 0x040a18, 0.1));
+    const halo = this.add.circle(948, 420, 226, 0x36c5ff, 0.035).setStrokeStyle(1, 0x78ddff, 0.24);
+    add(halo);
+    const orbit = this.add.ellipse(948, 424, 586, 174, 0x000000, 0).setAngle(-23).setStrokeStyle(1, 0x90c7e9, 0.2);
+    add(orbit);
+    this.menuPlanet = this.textures.exists("home_planet_dawnstar")
+      ? this.add.image(948, 420, "home_planet_dawnstar")
+      : this.add.circle(948, 420, 204, 0x146caa).setStrokeStyle(4, 0x8ae5ff, 0.6);
+    if (this.menuPlanet.type === "Image") this.menuPlanet.setScale(520 / Math.max(this.menuPlanet.width, this.menuPlanet.height));
+    add(this.menuPlanet);
+    const riftRing = this.add.circle(992, 110, 80, 0x693dc0, 0.025).setStrokeStyle(1, 0xc99aff, 0.24);
+    add(riftRing);
+    this.menuPortal = this.textures.exists("void_portal")
+      ? this.add.image(992, 110, "void_portal")
+      : this.add.circle(992, 110, 64, 0x100822).setStrokeStyle(6, 0x8753d6, 0.7);
+    if (this.menuPortal.type === "Image") this.menuPortal.setScale(180 / Math.max(this.menuPortal.width, this.menuPortal.height));
+    this.menuPortal.setAlpha(0.78);
+    add(this.menuPortal);
+    const dust = this.add.container(0, 0);
+    for (let i = 0; i < 12; i++) {
+      dust.add(this.add.rectangle(688 + (i * 83) % 530, 190 + (i * 67) % 420, i % 3 === 0 ? 2 : 1, 2, 0xb7deff, 0.16 + (i % 3) * 0.08));
+    }
+    add(dust);
+    this.addMenuAmbient({ targets: halo, alpha: 0.6, duration: 4600, yoyo: true, repeat: -1, ease: "Sine.easeInOut" });
+    this.addMenuAmbient({ targets: this.menuPortal, angle: -360, duration: 140000, repeat: -1 });
+    this.addMenuAmbient({ targets: riftRing, alpha: 0.45, duration: 5800, yoyo: true, repeat: -1, ease: "Sine.easeInOut" });
+    this.addMenuAmbient({ targets: dust, x: -12, y: 9, duration: 18000, yoyo: true, repeat: -1, ease: "Sine.easeInOut" });
+  }
+
+  createMainMenu() {
+    if (this.menuTitle) return false;
+    const text = (x, y, copy, size, color = TERMINAL_STYLE.text) => {
+      const item = this.makeText(x, y, copy, { fontSize: `${size}px`, color });
+      this.menuRoot.add(item);
+      return item;
+    };
+    const left = TERMINAL_STYLE.left;
+    text(left, 38, "星港终端 / STELLAR TERMINAL", 15, "#90bed5");
+    this.menuVersion = text(1192, 38, GAME_VERSION, 16, "#a7b6cc").setOrigin(1, 0);
+    this.menuRoot.add(this.add.rectangle(left + 25, 134, 50, 2, 0x69dcff, 0.8));
+    this.menuTitle = text(left - 3, 152, "星辰寂灭", 64).setFontStyle("bold");
+    this.menuTitle.setShadow(0, 2, "#3c92c5", 4, false, true);
+    text(left, 245, "VOIDFALL", 33, "#c8deee");
+    text(left + 1, 298, "STELLAR DEFENSE", 17, "#81a7c1");
+    text(left, 335, "守护晨曦星，直到群星熄灭之前。", 18, "#acbfd2");
+    text(948, 638, "晨曦星", 23, "#ccecff").setOrigin(0.5, 0);
+    text(948, 675, "DAWNSTAR", 12, "#799ab5").setOrigin(0.5, 0);
+    this.createTerminalButton("start", left + 180, TERMINAL_STYLE.primaryY, 360, 96, "开始守护", () => this.startFromMenu(), true);
+    this.createTerminalButton("archive", left + 87, TERMINAL_STYLE.secondaryRows[0], 174, 96, "档案库", () => this.openTerminalPanel("archive"));
+    this.createTerminalButton("records", left + 273, TERMINAL_STYLE.secondaryRows[0], 174, 96, "战绩", () => this.openTerminalPanel("records"));
+    this.createTerminalButton("settings", left + 87, TERMINAL_STYLE.secondaryRows[1], 174, 96, "设置", () => this.openTerminalPanel("settings"));
+    this.createTerminalButton("updates", left + 273, TERMINAL_STYLE.secondaryRows[1], 174, 96, "更新记录", () => this.openTerminalPanel("updates"));
+    this.menuTitle.setAlpha(0).setY(162);
+    this.tweens.add({ targets: this.menuTitle, alpha: 1, y: 152, duration: 700, ease: "Sine.easeOut" });
+    return true;
+  }
+
+  createTerminalButton(id, x, y, width, height, label, action, primary = false) {
+    const group = this.add.container(x, y);
+    const fill = primary ? 0x155377 : 0x112236;
+    const surface = this.add.rectangle(0, 0, width, height, fill, primary ? 0.96 : 0.82);
+    surface.setStrokeStyle(1, primary ? 0x69dcff : 0x47718e, primary ? 0.8 : 0.35).setInteractive({ useHandCursor: true });
+    const caption = this.makeText(0, -1, label, { fontSize: primary ? "30px" : "26px", color: TERMINAL_STYLE.text, fontStyle: primary ? "bold" : "normal" }).setOrigin(0.5);
+    const accent = this.add.rectangle(-width / 2 + 2, 0, 3, primary ? 34 : 18, TERMINAL_STYLE.cyan, primary ? 0.85 : 0.35);
+    group.add([surface, accent, caption]);
+    this.menuRoot.add(group);
+    const entry = { group, surface, caption, fill, primary, action };
+    this.menuButtons[id] = entry;
+    surface.on("pointerover", () => { if (!this.startRequested && !this.terminalPanel) surface.setFillStyle(primary ? 0x216e91 : 0x1c3950, 0.98); });
+    surface.on("pointerout", () => { this.resetMenuPress(); surface.setFillStyle(fill, primary ? 0.96 : 0.82); });
+    surface.on("pointerdown", (pointer) => {
+      if (this.startRequested || this.terminalPanel || this.menuPress) return;
+      this.menuPress = { entry, id: pointer.id, x: pointer.x, y: pointer.y };
+      group.setScale(0.98);
+    });
+    surface.on("pointerup", (pointer) => {
+      const press = this.menuPress;
+      if (!press || press.entry !== entry || press.id !== pointer.id) return;
+      this.resetMenuPress();
+      if (pointer.wasCanceled || Math.hypot(pointer.x - press.x, pointer.y - press.y) > 14 ||
+          this.startRequested || this.terminalPanel) return;
+      action();
+    });
+    return entry;
+  }
+
+  resetMenuPress() {
+    this.menuPress?.entry.group.setScale(1);
+    this.menuPress = null;
+  }
+
+  openTerminalPanel(kind) {
+    if (this.startRequested || this.terminalPanel || this.gameState !== "menu") return false;
+    const content = {
+      archive: ["档案库", "星港档案正在建立", "建筑与敌军档案尚未开放。"],
+      records: ["战绩", "守护记录将在后续版本开放", "当前没有永久战绩数据。"],
+      settings: ["设置", `${GAME_VERSION}  ·  星港终端`, "STELLAR TERMINAL"],
+      updates: ["更新记录", `${GAME_VERSION}  ·  星港终端`, "主界面 / 星港入口 / 返回星港\n\nv0.11.0-dev  ·  守护协议（RC）\nv0.10.0  ·  双翼防线"]
+    }[kind];
+    if (!content) return false;
+    this.resetMenuPress();
+    const elements = [];
+    const overlay = this.add.rectangle(640, 360, this.W, this.H, 0x020617, 0.58).setDepth(190).setInteractive();
+    const panel = this.add.rectangle(640, 360, 600, 408, UI_THEME.panel.fill, 0.96).setDepth(191);
+    panel.setStrokeStyle(1, UI_THEME.panel.border, 0.65);
+    elements.push(overlay, panel);
+    const addText = (y, copy, size, color) => {
+      const item = this.makeText(640, y, copy, { fontSize: `${size}px`, color, align: "center", lineSpacing: 9, wordWrap: { width: 520 } }).setOrigin(0.5, 0).setDepth(192);
+      elements.push(item);
+    };
+    addText(184, content[0], 32, UI_THEME.panel.value);
+    addText(249, content[1], 23, "#9ee7ff");
+    addText(307, content[2], 18, UI_THEME.panel.body);
+    const close = this.createModalButton(elements, 640, 512, 248, "返回", () => this.closeTerminalPanel(), true, 192);
+    this.terminalPanel = { kind, elements, closeButton: close.button, overlay, panel };
+    return true;
+  }
+
+  closeTerminalPanel() {
+    if (!this.terminalPanel) return false;
+    SceneDemo.prototype.destroyFixedUi.call(this, this.terminalPanel);
+    this.terminalPanel = null;
+    this.resetMenuPress();
+    return true;
+  }
+
+  startFromMenu() {
+    if (this.gameState !== "menu" || this.startRequested || this.terminalPanel) return false;
+    this.startRequested = true;
+    this.gameState = "departing";
+    this.input.enabled = false;
+    this.resetMenuPress();
+    this.tweens.killAll();
+    this.tweens.add({
+      targets: this.menuRoot, alpha: 0, duration: TERMINAL_STYLE.exitDuration, ease: "Sine.easeInOut",
+      onComplete: () => this.scene.start("SceneDemo", { fromMenu: true })
+    });
+    return true;
+  }
+}
+
 const config = {
   type: Phaser.AUTO,
   width: 1280,
   height: 720,
   parent: "game-container",
   backgroundColor: "#030712",
-  scene: [SceneDemo],
+  scene: [StellarTerminalScene, SceneDemo],
 
   resolution: Math.min(window.devicePixelRatio || 1, 2),
 
