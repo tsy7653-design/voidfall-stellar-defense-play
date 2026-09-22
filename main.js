@@ -1570,45 +1570,7 @@ class SceneDemo extends Phaser.Scene {
     this.cardDragState = { active: false, candidateCard: null, card: null, startX: 0, startY: 0, ghost: null, outline: null, valid: false };
 
     // 建筑无限升级配置：属性和费用均由统一计算接口生成，不维护独立升级计时器。
-    this.buildingProgressionConfig = {
-      collector: {
-        amount: 1,
-        intervalFloor: 2.5,
-        intervalBase: 10,
-        intervalDecay: 0.92,
-        costBase: 6,
-        costStep: 3,
-        costCap: 90,
-        color: 0x22c55e,
-        textColor: "#86efac"
-      },
-      turret: {
-        baseStats: {
-          1: { damage: 4, cooldown: 0.95, range: 250, color: 0x38bdf8, textColor: "#bae6fd" },
-          2: { damage: 6, cooldown: 0.82, range: 285, color: 0x0ea5e9, textColor: "#7dd3fc" },
-          3: { damage: 8, cooldown: 0.72, range: 320, color: 0x60a5fa, textColor: "#dbeafe" }
-        },
-        cooldownFloor: 0.4,
-        costCap: 90
-      },
-      laser: {
-        baseStats: {
-          1: { damage: 9, cooldown: 1.45, range: 560, color: 0xfacc15, textColor: "#fde68a" },
-          2: { damage: 13, cooldown: 1.3, range: 600, color: 0xf97316, textColor: "#fed7aa" },
-          3: { damage: 17, cooldown: 1.15, range: 640, color: 0xfef3c7, textColor: "#fef9c3" }
-        },
-        cooldownFloor: 0.65,
-        costCap: 95
-      },
-      shield: {
-        baseStats: {
-          1: { maxHp: 24, color: 0x93c5fd, textColor: "#dbeafe" },
-          2: { maxHp: 36, color: 0x38bdf8, textColor: "#bae6fd" },
-          3: { maxHp: 50, color: 0xfacc15, textColor: "#fde68a" }
-        },
-        costCap: 90
-      }
-    };
+    this.buildingProgressionConfig = createBuildingProgressionConfig();
 
     // 建筑与护盾耐久集中配置；当前均为临时测试值，等待后续平衡阶段调整。
     this.durabilityConfig = {
@@ -1665,65 +1627,7 @@ class SceneDemo extends Phaser.Scene {
       spawnIntervalMultipliers: [1, 0.85, 0.72, 0.62, 0.55, 0.5],
       minimumSpawnInterval: 0.8
     };
-    this.enemySpawnConfig = {
-      basic: {
-        hpMultiplier: 1,
-        speedMultiplier: 1,
-        damageMultiplier: 1,
-        killReward: 0
-      },
-      fast: {
-        hpMultiplier: 0.7,
-        speedMultiplier: 1.8,
-        damageMultiplier: 1,
-        killReward: 0
-      },
-      tank: {
-        hpMultiplier: 2.5,
-        speedMultiplier: 0.6,
-        damageMultiplier: 1.4,
-        killReward: 1
-      },
-      breaker: {
-        hpMultiplier: 1.3,
-        speedMultiplier: 0.9,
-        damageMultiplier: 1.1,
-        attackCooldown: 1,
-        shieldDamageMultiplier: 2.5,
-        killReward: 1,
-        minWave: 17,
-        waveRatio: 0.1
-      },
-      leaper: {
-        hpMultiplier: 0.8,
-        speedMultiplier: 1.25,
-        damageMultiplier: 1,
-        attackCooldown: 1,
-        killReward: 1,
-        minWave: 21,
-        waveRatio: 0.1
-      },
-      ranged: {
-        hpMultiplier: 0.9,
-        speedMultiplier: 0.75,
-        damageMultiplier: 1,
-        attackCooldown: 1.4,
-        attackRange: 150,
-        killReward: 1,
-        minWave: 13,
-        waveRatio: 0.1
-      },
-      waveCompositions: [
-        { maxWave: 5, basic: 1, fast: 0, tank: 0 },
-        { maxWave: 8, basic: 0.85, fast: 0.15, tank: 0 },
-        { maxWave: 10, basic: 0.65, fast: 0.25, tank: 0.1 },
-        { maxWave: 12, basic: 0.5, fast: 0.3, tank: 0.2 },
-        { maxWave: 16, basic: 0.45, fast: 0.25, tank: 0.2, ranged: 0.1 },
-        { maxWave: 20, basic: 0.35, fast: 0.2, tank: 0.25, ranged: 0.1, breaker: 0.1 },
-        { maxWave: Infinity, basic: 0.3, fast: 0.2, tank: 0.2, ranged: 0.1, breaker: 0.1, leaper: 0.1 }
-      ],
-      specialRotation: ["ranged", "breaker", "leaper"]
-    };
+    this.enemySpawnConfig = createEnemySpawnConfig();
 
     this.createBackground();
     this.createTitle();
@@ -7532,6 +7436,179 @@ const TERMINAL_STYLE = {
   exitDuration: 320, maxAmbientTweens: 6
 };
 
+// 战斗与档案共用原始配置，每次返回独立对象，档案不改写局内状态。
+function createBuildingProgressionConfig() {
+  return {
+    collector: {
+      amount: 1,
+      intervalFloor: 2.5,
+      intervalBase: 10,
+      intervalDecay: 0.92,
+      costBase: 6,
+      costStep: 3,
+      costCap: 90,
+      color: 0x22c55e,
+      textColor: "#86efac"
+    },
+    turret: {
+      baseStats: {
+        1: { damage: 4, cooldown: 0.95, range: 250, color: 0x38bdf8, textColor: "#bae6fd" },
+        2: { damage: 6, cooldown: 0.82, range: 285, color: 0x0ea5e9, textColor: "#7dd3fc" },
+        3: { damage: 8, cooldown: 0.72, range: 320, color: 0x60a5fa, textColor: "#dbeafe" }
+      },
+      cooldownFloor: 0.4,
+      costCap: 90
+    },
+    laser: {
+      baseStats: {
+        1: { damage: 9, cooldown: 1.45, range: 560, color: 0xfacc15, textColor: "#fde68a" },
+        2: { damage: 13, cooldown: 1.3, range: 600, color: 0xf97316, textColor: "#fed7aa" },
+        3: { damage: 17, cooldown: 1.15, range: 640, color: 0xfef3c7, textColor: "#fef9c3" }
+      },
+      cooldownFloor: 0.65,
+      costCap: 95
+    },
+    shield: {
+      baseStats: {
+        1: { maxHp: 24, color: 0x93c5fd, textColor: "#dbeafe" },
+        2: { maxHp: 36, color: 0x38bdf8, textColor: "#bae6fd" },
+        3: { maxHp: 50, color: 0xfacc15, textColor: "#fde68a" }
+      },
+      costCap: 90
+    }
+  };
+}
+
+// 战斗与档案共用原始配置，每次返回独立对象，档案不改写局内状态。
+function createEnemySpawnConfig() {
+  return {
+    basic: {
+      hpMultiplier: 1,
+      speedMultiplier: 1,
+      damageMultiplier: 1,
+      killReward: 0
+    },
+    fast: {
+      hpMultiplier: 0.7,
+      speedMultiplier: 1.8,
+      damageMultiplier: 1,
+      killReward: 0
+    },
+    tank: {
+      hpMultiplier: 2.5,
+      speedMultiplier: 0.6,
+      damageMultiplier: 1.4,
+      killReward: 1
+    },
+    breaker: {
+      hpMultiplier: 1.3,
+      speedMultiplier: 0.9,
+      damageMultiplier: 1.1,
+      attackCooldown: 1,
+      shieldDamageMultiplier: 2.5,
+      killReward: 1,
+      minWave: 17,
+      waveRatio: 0.1
+    },
+    leaper: {
+      hpMultiplier: 0.8,
+      speedMultiplier: 1.25,
+      damageMultiplier: 1,
+      attackCooldown: 1,
+      killReward: 1,
+      minWave: 21,
+      waveRatio: 0.1
+    },
+    ranged: {
+      hpMultiplier: 0.9,
+      speedMultiplier: 0.75,
+      damageMultiplier: 1,
+      attackCooldown: 1.4,
+      attackRange: 150,
+      killReward: 1,
+      minWave: 13,
+      waveRatio: 0.1
+    },
+    waveCompositions: [
+      { maxWave: 5, basic: 1, fast: 0, tank: 0 },
+      { maxWave: 8, basic: 0.85, fast: 0.15, tank: 0 },
+      { maxWave: 10, basic: 0.65, fast: 0.25, tank: 0.1 },
+      { maxWave: 12, basic: 0.5, fast: 0.3, tank: 0.2 },
+      { maxWave: 16, basic: 0.45, fast: 0.25, tank: 0.2, ranged: 0.1 },
+      { maxWave: 20, basic: 0.35, fast: 0.2, tank: 0.25, ranged: 0.1, breaker: 0.1 },
+      { maxWave: Infinity, basic: 0.3, fast: 0.2, tank: 0.2, ranged: 0.1, breaker: 0.1, leaper: 0.1 }
+    ],
+    specialRotation: ["ranged", "breaker", "leaper"]
+  };
+}
+
+const ARCHIVE_CATEGORIES = [
+  { id: "dawnstar", number: "01", name: "晨曦星", english: "DAWNSTAR" },
+  { id: "rift", number: "02", name: "虚空裂隙", english: "VOID RIFT" },
+  { id: "defense", number: "03", name: "防御设施", english: "DEFENSE SYSTEMS" },
+  { id: "hostile", number: "04", name: "敌军单位", english: "HOSTILE UNITS" }
+];
+
+// 这里只登记档案文案和视觉引用；所有战术数值在查询时读取战斗配置。
+const ARCHIVE_ENTRIES = [
+  { id: "DST-001", category: "dawnstar", name: "晨曦星", english: "DAWNSTAR", role: "CORE WORLD", status: "PROTECTED", texture: "home_planet_dawnstar", description: "当前防线的核心保护目标。\n两翼防御共同守护晨曦星。" },
+  { id: "VRT-001", category: "rift", name: "虚空裂隙", english: "VOID RIFT", role: "SPATIAL ANOMALY", status: "ACTIVE", texture: "void_portal", description: "敌军进入战场的异常入口。\n虚空潮汐从这里逼近防线。" },
+  { id: "DEF-001", category: "defense", type: "collector", name: "星尘采集器", english: "STARDUST COLLECTOR", role: "ENERGY SUPPORT", status: "ACTIVE", description: "稳定提供星能的资源设施。\n升级缩短生产间隔，单次产量不变。" },
+  { id: "DEF-002", category: "defense", type: "turret", name: "星轨炮台", english: "ORBITAL TURRET", role: "PROJECTILE DEFENSE", status: "ACTIVE", description: "晨曦防线的常规火力节点。\n发射弹体，持续攻击射程内的敌军。" },
+  { id: "DEF-003", category: "defense", type: "laser", name: "光棱卫星", english: "PRISM SATELLITE", role: "BEAM DEFENSE", status: "ACTIVE", description: "远距离光束火力节点。\n以聚焦激光攻击进入射程的敌军。" },
+  { id: "DEF-004", category: "defense", type: "shield", name: "引力护盾", english: "GRAVITY SHIELD", role: "DEFENSE BARRIER", status: "ACTIVE", description: "阻挡敌军推进的防御屏障。\n承受持续攻击，耐久耗尽后消散。" },
+  { id: "HST-001", category: "hostile", type: "basic", english: "BASIC ENTITY", role: "CONTACT ATTACK", status: "STANDARD", description: "常规虚空单位。沿战线推进，\n接触防御设施后停下并持续攻击。" },
+  { id: "HST-002", category: "hostile", type: "fast", english: "FAST ENTITY", role: "RAPID ADVANCE", status: "STANDARD", description: "高速推进的轻型单位。\n生命较低，但能更快接近防线。" },
+  { id: "HST-003", category: "hostile", type: "tank", english: "HEAVY ENTITY", role: "HEAVY ADVANCE", status: "HEAVY", description: "高生命的重装单位。\n移动缓慢，以持续推进施加压力。" },
+  { id: "HST-004", category: "hostile", type: "ranged", english: "RANGED ENTITY", role: "RANGED ATTACK", status: "SPECIAL", description: "在射程内停下并攻击前方设施。\n不能越过更近的建筑选择后方目标。" },
+  { id: "HST-005", category: "hostile", type: "breaker", english: "SHIELD BREAKER", role: "SHIELD BREAK", status: "SPECIAL", description: "对引力护盾造成额外伤害。\n仍会被前方其他建筑阻挡。" },
+  { id: "HST-006", category: "hostile", type: "leaper", english: "LEAP ENTITY", role: "SINGLE LEAP", status: "SPECIAL", description: "首次遭到阻挡时尝试跃过防御格。\n每只仅可跃迁一次，落点非法则取消。" }
+];
+
+function getArchiveRecord(id, buildingConfig = createBuildingProgressionConfig(), enemyConfig = createEnemySpawnConfig()) {
+  const entry = ARCHIVE_ENTRIES.find(item => item.id === id);
+  if (!entry) return null;
+  const record = { ...entry, stats: [], note: "ARCHIVE NOTE" };
+  if (entry.category === "defense") {
+    const stats = SceneDemo.prototype.getBuildingStats.call({ buildingProgressionConfig: buildingConfig }, entry.type, 1);
+    record.texture = BUILDING_VISUALS[entry.type].texture;
+    record.note = "战术资料 / 初始 Lv1 · 升级后属性随等级变化";
+    record.stats = entry.type === "collector"
+      ? [["星能产量", `${stats.amount} / 次`], ["生产间隔", `${stats.interval.toFixed(1)} 秒`]]
+      : entry.type === "shield" ? [["最大耐久", `${stats.maxHp}`]]
+      : [["单次伤害", `${stats.damage}`], ["攻击间隔", `${stats.cooldown} 秒`], ["射程", `${stats.range}`]];
+  } else if (entry.category === "hostile") {
+    const stats = enemyConfig[entry.type];
+    const phase = enemyConfig.waveCompositions.findIndex(item => (item[entry.type] || 0) > 0);
+    const firstWave = stats.minWave ?? (phase > 0 ? enemyConfig.waveCompositions[phase - 1].maxWave + 1 : 1);
+    record.name = SceneDemo.prototype.getEnemyDisplayName(entry.type);
+    record.texture = ENEMY_VISUALS[entry.type].texture;
+    record.note = "战术资料 / 同波普通体为基准 · 生命与伤害取整";
+    const special = entry.type === "ranged" ? ["远程攻击距离", `${stats.attackRange}`]
+      : entry.type === "breaker" ? ["对护盾伤害", `${stats.shieldDamageMultiplier * 100}%`]
+      : ["作战特征", entry.type === "leaper" ? "单次跃迁" : entry.type === "fast" ? "快速推进" : entry.type === "tank" ? "重装推进" : "接触攻击"];
+    record.stats = [["生命倍率", `${Math.round(stats.hpMultiplier * 100)}%`], ["移动速度", `${Math.round(stats.speedMultiplier * 100)}%`], ["攻击伤害", `${Math.round(stats.damageMultiplier * 100)}%`], ["首次出现", `第 ${firstWave} 波`], ["击杀星能", `+${stats.killReward}`], special];
+  } else {
+    record.stats = entry.category === "dawnstar" ? [["目标类型", "核心星球"], ["守护状态", "防线保护中"]]
+      : [["异常类型", "空间入口"], ["活动状态", "活跃"]];
+  }
+  return record;
+}
+
+const ARCHIVE_STYLE = { ink: 0x06121f, cyan: 0x65cee8, text: "#e2edf4", muted: "#89a9bc", fadeOut: 90, fadeIn: 180, scanDuration: 850 };
+
+function getArchiveLayout(displayWidth) {
+  const compact = displayWidth < 1000;
+  return {
+    compact, categoryX: 40, categoryWidth: compact ? 288 : 176,
+    listX: compact ? 40 : 238, listWidth: compact ? 280 : 276,
+    listTop: compact ? 254 : 184, rowHeight: compact ? 70 : 80,
+    detailX: compact ? 356 : 550, detailTop: compact ? 246 : 166,
+    detailWidth: compact ? 884 : 690, imageSize: compact ? 238 : 260,
+    dataTop: 544
+  };
+}
+
 class StellarTerminalScene extends Phaser.Scene {
   constructor() {
     super("StellarTerminal");
@@ -7566,6 +7643,8 @@ class StellarTerminalScene extends Phaser.Scene {
     this.menuButtons = {};
     this.ambientTweens = [];
     this.menuTitle = null;
+    this.archiveUi = null;
+    this.archivePress = null;
     this.input.enabled = true;
     this.createTerminalBackdrop();
     this.createMainMenu();
@@ -7573,6 +7652,7 @@ class StellarTerminalScene extends Phaser.Scene {
     this.input.on("pointercancel", () => this.resetMenuPress());
     this.input.on("pointerupoutside", () => this.resetMenuPress());
     this.input.on("gameout", () => this.resetMenuPress());
+    this.scale.on("resize", this.layoutArchive, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.tweens.killAll();
       this.time.removeAllEvents();
@@ -7581,6 +7661,9 @@ class StellarTerminalScene extends Phaser.Scene {
       this.terminalPanel = null;
       this.menuButtons = {};
       this.menuRoot = null;
+      this.scale.off("resize", this.layoutArchive, this);
+      this.archiveUi = null;
+      this.archivePress = null;
     });
   }
 
@@ -7691,12 +7774,13 @@ class StellarTerminalScene extends Phaser.Scene {
   resetMenuPress() {
     this.menuPress?.entry.group.setScale(1);
     this.menuPress = null;
+    this.archivePress = null;
   }
 
   openTerminalPanel(kind) {
     if (this.startRequested || this.terminalPanel || this.gameState !== "menu") return false;
+    if (kind === "archive") return this.openArchive();
     const content = {
-      archive: ["档案库", "星港档案正在建立", "建筑与敌军档案尚未开放。"],
       records: ["战绩", "守护记录将在后续版本开放", "当前没有永久战绩数据。"],
       settings: ["设置", `${GAME_VERSION}  ·  星港终端`, "STELLAR TERMINAL"],
       updates: ["更新记录", `${GAME_VERSION}  ·  星港终端`, "主界面 / 星港入口 / 返回星港\n\nv0.11.0-dev  ·  守护协议（RC）\nv0.10.0  ·  双翼防线"]
@@ -7722,7 +7806,256 @@ class StellarTerminalScene extends Phaser.Scene {
 
   closeTerminalPanel() {
     if (!this.terminalPanel) return false;
+    if (this.terminalPanel.kind === "archive") return this.closeArchive();
     SceneDemo.prototype.destroyFixedUi.call(this, this.terminalPanel);
+    this.terminalPanel = null;
+    this.resetMenuPress();
+    return true;
+  }
+
+  // 档案只在首次打开时创建，分类、详情和扫描线都复用；退出场景才由 Phaser 统一销毁。
+  createArchiveUi() {
+    if (this.archiveUi) return this.archiveUi;
+    const root = this.add.container(0, 0).setDepth(190);
+    const text = (parent, x, y, copy, size, color = ARCHIVE_STYLE.text) => {
+      const item = this.makeText(x, y, copy, { fontSize: `${size}px`, color, lineSpacing: 5 });
+      item.setPadding(0, 2, 0, 2);
+      parent.add(item);
+      return item;
+    };
+    root.add(this.add.rectangle(640, 360, 1280, 720, ARCHIVE_STYLE.ink, 0.94));
+    root.add(this.add.rectangle(640, 119, 1200, 1, ARCHIVE_STYLE.cyan, 0.28));
+    root.add(this.add.rectangle(640, 698, 1200, 1, ARCHIVE_STYLE.cyan, 0.15));
+    text(root, 40, 27, "STELLAR ARCHIVE", 34);
+    text(root, 42, 78, "DAWNSTAR DEFENSE DATABASE", 17, ARCHIVE_STYLE.muted);
+    const network = text(root, 698, 53, "DS-01  /  ONLINE", 16, ARCHIVE_STYLE.muted);
+    text(root, 1240, 22, GAME_VERSION, 16, ARCHIVE_STYLE.muted).setOrigin(1, 0);
+    const closeButton = this.add.rectangle(1134, 83, 212, 58, 0x133449, 0.85).setStrokeStyle(1, ARCHIVE_STYLE.cyan, 0.4);
+    root.add(closeButton);
+    text(root, 1134, 83, "‹  返回星港", 24).setOrigin(0.5);
+    const categories = ARCHIVE_CATEGORIES.map(category => {
+      const group = this.add.container(0, 0);
+      const surface = this.add.rectangle(0, 0, 176, 100, 0x153549, 0.2);
+      const accent = this.add.rectangle(1, 50, 2, 36, ARCHIVE_STYLE.cyan, 0.9);
+      group.add([surface, accent]); root.add(group);
+      const number = text(group, 16, 9, category.number, 16, ARCHIVE_STYLE.muted);
+      const name = text(group, 16, 33, category.name, 26);
+      const english = text(group, 16, 74, category.english, 14, ARCHIVE_STYLE.muted);
+      this.bindArchiveAction(surface, () => this.selectArchiveCategory(category.id));
+      return { ...category, group, surface, accent, number, name, english };
+    });
+    const listTitle = text(root, 0, 0, "ARCHIVE INDEX", 16, ARCHIVE_STYLE.muted);
+    const rows = Array.from({ length: 6 }, () => {
+      const group = this.add.container(0, 0);
+      const surface = this.add.rectangle(0, 0, 276, 80, 0x164056, 0.2);
+      const accent = this.add.rectangle(1, 40, 2, 36, ARCHIVE_STYLE.cyan, 0.8);
+      const line = this.add.rectangle(138, 79, 260, 1, ARCHIVE_STYLE.cyan, 0.12);
+      group.add([surface, accent, line]); root.add(group);
+      const idText = text(group, 14, 5, "", 14, ARCHIVE_STYLE.muted);
+      const name = text(group, 14, 25, "", 24);
+      const role = text(group, 14, 57, "", 13, ARCHIVE_STYLE.muted);
+      const status = text(group, 262, 5, "", 13, "#9ccdda").setOrigin(1, 0);
+      for (const label of [idText, name, role, status]) label.setPadding(0);
+      const row = { group, surface, accent, line, idText, name, role, status, recordId: null };
+      this.bindArchiveAction(surface, () => { if (row.recordId) this.selectArchiveEntry(row.recordId); });
+      return row;
+    });
+    const divider = this.add.rectangle(532, 420, 1, 530, ARCHIVE_STYLE.cyan, 0.2);
+    root.add(divider);
+    const detail = this.add.container(0, 0); root.add(detail);
+    const idText = text(detail, 0, 0, "", 18, "#88d6e9");
+    const readyText = text(detail, 0, 0, "DATA READY", 14, ARCHIVE_STYLE.muted).setOrigin(1, 0);
+    const diagram = this.add.container(136, 180); detail.add(diagram);
+    // 稀疏网格与角标只在图像区域出现，不参与输入或战场逻辑。
+    for (let i = -3; i <= 3; i++) {
+      diagram.add(this.add.rectangle(i * 40, 0, 1, 260, ARCHIVE_STYLE.cyan, 0.08));
+      diagram.add(this.add.rectangle(0, i * 40, 260, 1, ARCHIVE_STYLE.cyan, 0.08));
+    }
+    for (const x of [-130, 130]) for (const y of [-130, 130]) {
+      diagram.add(this.add.rectangle(x - Math.sign(x) * 10, y, 20, 1, ARCHIVE_STYLE.cyan, 0.5));
+      diagram.add(this.add.rectangle(x, y - Math.sign(y) * 10, 1, 20, ARCHIVE_STYLE.cyan, 0.5));
+    }
+    const image = this.add.image(0, 0, "__WHITE"); diagram.add(image);
+    const fallback = this.add.container(0, 0);
+    fallback.add(this.add.circle(0, -8, 72, 0x12344d, 0.6).setStrokeStyle(1, ARCHIVE_STYLE.cyan, 0.6));
+    fallback.add(this.add.rectangle(0, -8, 62, 62, 0x367c9a, 0.4).setAngle(45));
+    text(fallback, 0, 86, "SCHEMATIC", 16, ARCHIVE_STYLE.muted).setOrigin(0.5);
+    diagram.add(fallback);
+    const scan = this.add.rectangle(0, -130, 260, 2, ARCHIVE_STYLE.cyan, 0.25).setAlpha(0); diagram.add(scan);
+    const title = text(detail, 286, 43, "", 32);
+    const english = text(detail, 286, 93, "", 16, ARCHIVE_STYLE.muted);
+    const classification = text(detail, 286, 133, "", 16, "#9bcad9");
+    const description = text(detail, 286, 174, "", 24);
+    const note = text(detail, 0, 0, "", 18, ARCHIVE_STYLE.muted);
+    const dataLine = this.add.rectangle(0, 0, 690, 1, ARCHIVE_STYLE.cyan, 0.24).setOrigin(0, 0.5); detail.add(dataLine);
+    const stats = Array.from({ length: 6 }, () => {
+      const group = this.add.container(0, 0); detail.add(group);
+      return { group, label: text(group, 0, 0, "", 17, ARCHIVE_STYLE.muted), value: text(group, 0, 24, "", 24) };
+    });
+    this.archiveUi = { kind: "archive", root, elements: [root], closeButton, network, categories, rows, listTitle, divider, detail,
+      idText, readyText, diagram, image, fallback, scan, title, english, classification, description, note, dataLine, stats,
+      categoryId: null, selectedId: null, layout: null };
+    this.bindArchiveAction(closeButton, () => this.closeArchive());
+    this.layoutArchive();
+    return this.archiveUi;
+  }
+
+  bindArchiveAction(surface, action) {
+    surface.setInteractive({ useHandCursor: true });
+    surface.on("pointerdown", pointer => {
+      if (this.gameState !== "archive" || this.archivePress) return;
+      this.archivePress = { surface, id: pointer.id, x: pointer.x, y: pointer.y };
+    });
+    surface.on("pointerup", pointer => {
+      const press = this.archivePress;
+      if (!press || press.surface !== surface || press.id !== pointer.id) return;
+      this.archivePress = null;
+      if (this.gameState === "archive" && !pointer.wasCanceled && Math.hypot(pointer.x - press.x, pointer.y - press.y) <= 14) action();
+    });
+    surface.on("pointerout", () => { if (this.archivePress?.surface === surface) this.archivePress = null; });
+  }
+
+  layoutArchive() {
+    const ui = this.archiveUi;
+    if (!ui) return;
+    const layout = getArchiveLayout(this.scale.displaySize?.width ?? this.W);
+    if (ui.layout?.compact === layout.compact) return;
+    ui.layout = layout;
+    const { compact, listX, listWidth, listTop, rowHeight, detailX, detailTop, detailWidth, imageSize } = layout;
+    ui.network.setVisible(!compact);
+    const sizeButton = (surface, width, height) => {
+      surface.setPosition(width / 2, height / 2).setSize(width, height);
+      surface.input.hitArea.setTo(0, 0, width, height);
+    };
+    ui.categories.forEach((item, index) => {
+      item.group.setPosition(compact ? 40 + index * 300 : 40, compact ? 138 : 174 + index * 116);
+      sizeButton(item.surface, layout.categoryWidth, compact ? 86 : 102);
+      item.accent.setY(compact ? 43 : 50);
+      item.number.setPosition(16, compact ? 10 : 9);
+      item.name.setPosition(compact ? 53 : 16, compact ? 8 : 33);
+      item.english.setY(compact ? 52 : 74);
+    });
+    ui.listTitle.setPosition(listX + 14, listTop - 30);
+    ui.rows.forEach((row, index) => {
+      row.group.setPosition(listX, listTop + index * rowHeight);
+      sizeButton(row.surface, listWidth, rowHeight - 2);
+      row.accent.setY(rowHeight / 2);
+      row.line.setPosition(listWidth / 2, rowHeight - 1).setSize(listWidth - 28, 1);
+      row.status.setX(listWidth - 14);
+      row.name.setY(compact ? 23 : 26);
+      row.role.setY(compact ? 53 : 60);
+    });
+    ui.divider.setPosition(detailX - 18, (listTop + 688) / 2).setSize(1, 688 - listTop);
+    ui.detail.setPosition(detailX, detailTop);
+    ui.readyText.setPosition(detailWidth, 0);
+    ui.diagram.setScale(imageSize / 260).setY(compact ? 162 : 185);
+    ui.description.setWordWrapWidth(detailWidth - 290, true);
+    ui.classification.setWordWrapWidth(detailWidth - 290, true);
+    ui.note.setPosition(0, layout.dataTop - detailTop);
+    ui.dataLine.setPosition(0, layout.dataTop - detailTop - 14).setSize(detailWidth, 1);
+    ui.stats.forEach((stat, index) => stat.group.setPosition((index % 3) * detailWidth / 3, layout.dataTop - detailTop + 33 + Math.floor(index / 3) * 58));
+    if (ui.selectedId) this.selectArchiveEntry(ui.selectedId, false);
+  }
+
+  openArchive() {
+    if (this.gameState !== "menu" || this.terminalPanel || this.startRequested) return false;
+    this.resetMenuPress();
+    const ui = this.createArchiveUi();
+    this.gameState = "archive";
+    this.terminalPanel = ui;
+    this.menuRoot.setVisible(false);
+    this.ambientTweens.forEach(tween => tween.pause());
+    ui.root.setVisible(true).setActive(true);
+    ui.closeButton.input.enabled = true;
+    ui.categories.forEach(item => { item.surface.input.enabled = true; });
+    this.selectArchiveCategory(ui.categoryId || "dawnstar", false);
+    return true;
+  }
+
+  selectArchiveCategory(categoryId, animate = true) {
+    const ui = this.archiveUi;
+    if (this.gameState !== "archive" || !ARCHIVE_CATEGORIES.some(item => item.id === categoryId)) return false;
+    const entries = ARCHIVE_ENTRIES.filter(item => item.category === categoryId);
+    const selectedId = ui.categoryId === categoryId && entries.some(item => item.id === ui.selectedId) ? ui.selectedId : entries[0].id;
+    ui.categoryId = categoryId;
+    ui.categories.forEach(item => {
+      const selected = item.id === categoryId;
+      item.surface.setFillStyle(0x153e53, selected ? 0.7 : 0.12);
+      item.accent.setVisible(selected);
+    });
+    ui.rows.forEach((row, index) => {
+      const entry = entries[index];
+      row.recordId = entry?.id || null;
+      row.group.setVisible(!!entry).setActive(!!entry);
+      row.surface.input.enabled = !!entry;
+      if (!entry) return;
+      row.idText.setText(entry.id);
+      row.name.setText(entry.name || SceneDemo.prototype.getEnemyDisplayName(entry.type));
+      row.role.setText(entry.role);
+      row.status.setText(entry.status);
+    });
+    return this.selectArchiveEntry(selectedId, animate);
+  }
+
+  stopArchiveTransition() {
+    const ui = this.archiveUi;
+    if (!ui) return;
+    this.tweens.killTweensOf([ui.detail, ui.scan]);
+    ui.scan.setAlpha(0);
+  }
+
+  selectArchiveEntry(id, animate = true) {
+    const ui = this.archiveUi;
+    const record = getArchiveRecord(id);
+    if (this.gameState !== "archive" || !record || record.category !== ui.categoryId) return false;
+    this.stopArchiveTransition();
+    ui.selectedId = id;
+    ui.rows.forEach(row => {
+      const selected = row.recordId === id;
+      row.accent.setVisible(selected);
+      row.surface.setFillStyle(0x1d5269, selected ? 0.48 : 0.06);
+    });
+    const show = () => {
+      ui.record = record;
+      ui.idText.setText(`ARCHIVE ID / ${record.id}`);
+      ui.title.setText(record.name);
+      ui.english.setText(record.english);
+      ui.classification.setText(`${record.role} / ${record.status}`);
+      ui.description.setText(record.description);
+      ui.note.setText(record.note);
+      const hasTexture = this.textures.exists(record.texture);
+      ui.image.setVisible(hasTexture);
+      ui.fallback.setVisible(!hasTexture);
+      if (hasTexture) {
+        ui.image.setTexture(record.texture);
+        ui.image.setScale(242 / Math.max(ui.image.width, ui.image.height));
+      }
+      ui.stats.forEach((stat, index) => {
+        const pair = record.stats[index];
+        stat.group.setVisible(!!pair);
+        if (pair) { stat.label.setText(pair[0]); stat.value.setText(pair[1]); }
+      });
+      ui.detail.setAlpha(animate ? 0.2 : 1).setY(ui.layout.detailTop + (animate ? 4 : 0));
+      if (animate) {
+        this.tweens.add({ targets: ui.detail, alpha: 1, y: ui.layout.detailTop, duration: ARCHIVE_STYLE.fadeIn, ease: "Sine.easeOut" });
+        ui.scan.setY(-130).setAlpha(0.3);
+        this.tweens.add({ targets: ui.scan, y: 130, duration: ARCHIVE_STYLE.scanDuration, ease: "Sine.easeInOut", onComplete: () => ui.scan.setAlpha(0) });
+      }
+    };
+    if (animate) this.tweens.add({ targets: ui.detail, alpha: 0.15, duration: ARCHIVE_STYLE.fadeOut, onComplete: show });
+    else show();
+    return true;
+  }
+
+  closeArchive() {
+    if (this.gameState !== "archive") return false;
+    const ui = this.archiveUi;
+    this.stopArchiveTransition();
+    ui.root.setVisible(false).setActive(false);
+    for (const surface of [ui.closeButton, ...ui.categories.map(item => item.surface), ...ui.rows.map(row => row.surface)]) surface.input.enabled = false;
+    this.menuRoot.setVisible(true);
+    this.ambientTweens.forEach(tween => tween.resume());
+    this.gameState = "menu";
     this.terminalPanel = null;
     this.resetMenuPress();
     return true;
